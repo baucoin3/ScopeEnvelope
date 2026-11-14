@@ -4,7 +4,7 @@
 
 - **Branch:** feat/gateway-core
 - **Last updated:** 2026-11-14
-- **Summary:** 7 files (2 new, 5 modified)
+- **Summary:** 7 files (4 new, 3 modified)
 
 ## What to do next
 
@@ -61,5 +61,18 @@
   - src/scope_envelope/store.py
   - tests/test_demo_flow.py
   - tests/test_portability.py
+
+
+### 2026-11-14T20:34:06Z
+- 7 files (4 new, 3 modified)
+  New:
+  - rfc.md
+  - sample.png
+  - src/scope_envelope/chat.py
+  - tests/test_chat.py
+  Modified:
+  - pyproject.toml
+  - src/scope_envelope/agent.py
+  - src/scope_envelope/gateway.py
 
 ## Past Sessions
