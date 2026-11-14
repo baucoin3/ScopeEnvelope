@@ -11,6 +11,22 @@ const COLORS = {
 
 const CONDITIONS = ["lazy", "envelope"];
 
+// Hard requirement: nodes never overlap. Each node keeps this much space around its centre,
+// which covers the dot, the "agent is here" rings and the filename label underneath.
+const NODE_SPACING = 34;
+
+function overlapping(nodes) {
+  const list = Array.from(nodes);
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const dx = (list[i].x || 0) - (list[j].x || 0);
+      const dy = (list[i].y || 0) - (list[j].y || 0);
+      if (dx * dx + dy * dy < (2 * NODE_SPACING - 2) ** 2) return true;
+    }
+  }
+  return false;
+}
+
 class ConditionGraph {
   constructor(condition, containerEl) {
     this.condition = condition;
@@ -41,6 +57,14 @@ class ConditionGraph {
         ctx.fill();
       })
       .cooldownTime(3000); // settle after 3s; graphData() updates re-heat it. Infinity kept every graph animating forever.
+    // Spacing: collision keeps nodes apart, stronger repulsion and longer links spread the graph out.
+    this.graph.d3Force("collide", d3.forceCollide(NODE_SPACING).strength(1).iterations(4));
+    this.graph.d3Force("charge").strength(-220);
+    this.graph.d3Force("link").distance(80);
+    // Safety net: if the layout settles with anything still overlapping, keep it running until it doesn't.
+    this.graph.onEngineStop(() => {
+      if (overlapping(this.nodes.values())) this.graph.d3ReheatSimulation();
+    });
     this.graph.graphData({ nodes: [], links: [] });
     // Pin a fixed, zoomed-out starting scale instead of fitting to content --
     // fitting to content looks fine once there are a couple dozen nodes, but
@@ -103,6 +127,11 @@ class ConditionGraph {
     let node = this.nodes.get(path);
     if (!node) {
       node = { id: path, status, inScope: !!inScope };
+      // Start new nodes next to the file the agent came from, not stacked at the centre.
+      const anchor = this.lastGoodId && this.nodes.get(this.lastGoodId);
+      const angle = Math.random() * 2 * Math.PI;
+      node.x = (anchor ? anchor.x || 0 : 0) + Math.cos(angle) * NODE_SPACING * 2.5;
+      node.y = (anchor ? anchor.y || 0 : 0) + Math.sin(angle) * NODE_SPACING * 2.5;
       this.nodes.set(path, node);
     } else {
       // write/blocked override read; don't let a later read downgrade
