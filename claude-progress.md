@@ -4,7 +4,7 @@
 
 - **Branch:** visual-v2
 - **Last updated:** 2026-11-14
-- **Summary:** 16 files (4 new, 12 modified)
+- **Summary:** 10 files (3 new, 7 modified)
 
 ## What to do next
 
@@ -95,5 +95,21 @@
   - webviz/server.py	src/scope_envelope/webviz/server.py
   - webviz/static/app.js	src/scope_envelope/webviz/static/app.js
   - ... (+2 more)
+
+
+### 2026-11-14T21:20:01Z
+- 10 files (3 new, 7 modified)
+  New:
+  - .claude
+  - rfc.md
+  - sample.png
+  Modified:
+  - .env.example
+  - src/scope_envelope/agent.py
+  - src/scope_envelope/config.py
+  - src/scope_envelope/gateway.py
+  - src/scope_envelope/tools.py
+  - tests/test_demo_flow.py
+  - tests/test_gateway.py
 
 ## Past Sessions
