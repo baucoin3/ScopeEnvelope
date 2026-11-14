@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .bridge import Bridge
 from .live_source import LiveSource
+from .local_source import LocalSource
 from .mock_source import MockSource
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -32,8 +33,12 @@ async def _startup() -> None:
     global _bridge
     loop = asyncio.get_running_loop()
     # Live Atlas Change Stream by default; WEBVIZ_MOCK=1 replays the scripted mock for tuning visuals.
-    if os.environ.get("WEBVIZ_MOCK") == "1":
+    # local: events handed over in-process by scope-agent (instant); live: Atlas Change Stream; mock: scripted.
+    mode = "mock" if os.environ.get("WEBVIZ_MOCK") == "1" else os.environ.get("WEBVIZ_SOURCE", "live")
+    if mode == "mock":
         source = MockSource(ticket=TICKET)
+    elif mode == "local":
+        source = LocalSource()
     else:
         source = LiveSource()
     _bridge = Bridge([source], ticket=TICKET, loop=loop)
@@ -41,11 +46,15 @@ async def _startup() -> None:
 
 
 def serve_in_background(host: str = "127.0.0.1", port: int = 8765) -> str:
-    """Start the web viewer in a daemon thread (used by scope-agent). Returns its URL."""
+    """Start the web viewer in a daemon thread (used by scope-agent). Returns its URL.
+
+    Fed in-process (see local_source.publish), so the map keeps up with the agent.
+    """
     import threading
 
     import uvicorn
 
+    os.environ.setdefault("WEBVIZ_SOURCE", "local")
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
     return f"http://{host}:{port}/"

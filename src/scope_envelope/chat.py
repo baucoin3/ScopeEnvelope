@@ -147,6 +147,10 @@ def _run(console: Console, link: str, instructions: str, gateway_on: bool, ui_ur
     console.print(f"[bold]Live view:[/] {live}")
 
     def show(event: dict) -> None:
+        if os.environ.get("WEBVIZ_SOURCE") == "local":
+            from .webviz.local_source import publish
+
+            publish(event)  # straight to the browser, no Atlas round trip
         line = event_line(event)
         if line:
             console.print(line)

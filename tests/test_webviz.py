@@ -44,3 +44,11 @@ def test_live_events_become_browser_events(tmp_path):
     assert written["path"] == "app.py" and written["in_scope"] and "+x = 2" in written["diff"]
     assert wire[-1]["type"] == "done" and wire[-1]["tool_calls_cum"] == 3
     assert wire[-1]["prompt_tokens_cum"] == 1000 and wire[-1]["cost_usd_cum"] == 0.001
+
+
+def test_local_source_delivers_published_events():
+    from scope_envelope.webviz.local_source import LocalSource, publish
+
+    publish({"tool": "read_file", "path": "a.py", "condition": "lazy"})
+    event_type, doc = next(LocalSource().events())
+    assert event_type == "run" and doc["path"] == "a.py"

@@ -552,6 +552,12 @@ class Gateway:
             "ts": datetime.now(UTC),
             **(extra or {}),
         }
+        # Live views first (instant), then Atlas (a network round trip).
+        if self.on_event:
+            try:
+                self.on_event(event)
+            except Exception as exc:  # a display problem must not break the run
+                log.warning("on_event callback failed: %s", exc)
         if self.store:
             try:
                 self.store.log(event)
@@ -559,11 +565,6 @@ class Gateway:
                 if not self._log_failed:
                     log.warning("could not write to runs (continuing without telemetry): %s", exc)
                     self._log_failed = True
-        if self.on_event:
-            try:
-                self.on_event(event)
-            except Exception as exc:  # a display problem must not break the run
-                log.warning("on_event callback failed: %s", exc)
         if self.verbose:
             where = f" {path}" if path else ""
             note = f" ({reason})" if reason else ""

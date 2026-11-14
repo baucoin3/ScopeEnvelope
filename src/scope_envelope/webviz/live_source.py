@@ -18,7 +18,8 @@ class LiveSource:
         self._queue: "queue.Queue[tuple[str, dict]]" = queue.Queue()
 
     def _watch(self) -> None:
-        with self._runs.watch([{"$match": {"operationType": "insert"}}]) as stream:
+        # max_await_time_ms: ask Atlas for new events every 0.2s instead of the ~1s default.
+        with self._runs.watch([{"$match": {"operationType": "insert"}}], max_await_time_ms=200) as stream:
             for change in stream:
                 self._queue.put(("run", change["fullDocument"]))
 
