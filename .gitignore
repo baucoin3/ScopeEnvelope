@@ -3,3 +3,5 @@ runs.jsonl
 __pycache__/
 *.pyc
 .venv/
+venv/
+work/
