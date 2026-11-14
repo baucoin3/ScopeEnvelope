@@ -2,9 +2,9 @@
 
 ## Current State
 
-- **Branch:** visual-v2
+- **Branch:** feat/live-view-speed
 - **Last updated:** 2026-11-14
-- **Summary:** 7 files (3 new, 4 modified)
+- **Summary:** 9 files (4 new, 5 modified)
 
 ## What to do next
 
@@ -124,5 +124,20 @@
   - src/scope_envelope/chat.py
   - src/scope_envelope/config.py
   - tests/test_demo_flow.py
+
+
+### 2026-11-14T21:37:21Z
+- 9 files (4 new, 5 modified)
+  New:
+  - .claude
+  - rfc.md
+  - sample.png
+  - src/scope_envelope/webviz/local_source.py
+  Modified:
+  - src/scope_envelope/chat.py
+  - src/scope_envelope/gateway.py
+  - src/scope_envelope/webviz/live_source.py
+  - src/scope_envelope/webviz/server.py
+  - tests/test_webviz.py
 
 ## Past Sessions
