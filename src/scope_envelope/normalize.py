@@ -16,12 +16,18 @@ SUFFIXES = ("Event", "Message", "Command", "Request", "Response")
 # Matches CamelCase identifiers with at least two humps, e.g. OrderPlacedEvent.
 _CAMEL = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b")
 _WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
-# A path segment that starts with a migration-style number: 0042_add_orders.py
-_NUMBER_PREFIX = re.compile(r"(^|/)\d+_")
+# A path segment that starts with a number: migrations/0042_add_orders.py, .changelog/50373.txt
+_NUMBER_PREFIX = re.compile(r"(^|/)\d+(?=[_.])")
+# Terraform resource or data source names: aws_neptune_cluster, google_storage_bucket, ...
+_TF_RESOURCE = re.compile(r"\b(?:aws|azurerm|google|awscc)_([a-z0-9]+(?:_[a-z0-9]+)*)\b")
 
 
-def extract_subject(ticket_text: str) -> str | None:
-    """Return the ticket's subject words, e.g. 'order placed' for OrderPlacedEvent."""
+def _from_terraform(ticket_text: str) -> str | None:
+    match = _TF_RESOURCE.search(ticket_text)
+    return match.group(1).replace("_", " ") if match else None
+
+
+def _from_camel_case(ticket_text: str) -> str | None:
     match = _CAMEL.search(ticket_text)
     if not match:
         return None
@@ -31,6 +37,34 @@ def extract_subject(ticket_text: str) -> str | None:
             name = name[: -len(suffix)]
             break
     return " ".join(w.lower() for w in _WORDS.findall(name))
+
+
+# Built-in styles, tried after any patterns from the repo's config.
+EXTRACTORS = [_from_terraform, _from_camel_case]
+
+
+def _words(name: str) -> str:
+    """'aws_sns_topic' / 'sns-topic' / 'SnsTopic' -> 'sns topic'."""
+    if re.search(r"[_\-\s]", name):
+        return " ".join(part.lower() for part in re.split(r"[_\-\s]+", name) if part)
+    return " ".join(w.lower() for w in _WORDS.findall(name))
+
+
+def extract_subject(ticket_text: str, patterns: list[str] | tuple[str, ...] = ()) -> str | None:
+    """Return the ticket's subject words, e.g. 'order placed' for OrderPlacedEvent.
+
+    `patterns` come from the repo's config (subject_patterns): regexes whose first
+    group is the subject name. They are tried before the built-in styles.
+    """
+    for pattern in patterns:
+        match = re.search(pattern, ticket_text)
+        if match and match.groups() and match.group(1):
+            return _words(match.group(1))
+    for extract in EXTRACTORS:
+        subject = extract(ticket_text)
+        if subject:
+            return subject
+    return None
 
 
 def forms(subject: str) -> dict[str, str]:
@@ -59,7 +93,7 @@ def _pattern(value: str, key: str) -> re.Pattern[str]:
 
 def normalize(text: str, subject: str | None) -> str:
     """Replace every form of the subject with its placeholder, and number prefixes with {n}."""
-    text = _NUMBER_PREFIX.sub(r"\1{n}_", text)
+    text = _NUMBER_PREFIX.sub(r"\1{n}", text)
     if not subject:
         return text
     # Longest first, so 'order_placed' is replaced before 'order' could match inside it.

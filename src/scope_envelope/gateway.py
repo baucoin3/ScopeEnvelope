@@ -1,13 +1,13 @@
 """The gateway: every agent tool call goes through here.
 
-One Gateway per run. In "scoped" mode it fetches the learned scope, injects it
-into the prompt and blocks writes outside it. In "raw" mode it only observes:
-it runs every call and logs it, so the TUI can show both runs side by side.
+One Gateway per run. In "envelope" mode it fetches the learned scope, injects it
+into the prompt and blocks writes outside it. In "lazy" mode it only observes:
+it runs every call and logs it, so the viewer can show both runs side by side.
 """
 
 from __future__ import annotations
 
-import os
+import logging
 import re
 import subprocess
 import sys
@@ -17,10 +17,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .config import Config, load_config
 from .normalize import extract_subject, normalize
 from .scope import Scope, render_prompt
 from .store import Store
 
+log = logging.getLogger("scope_envelope")
+
+MODES = ("lazy", "envelope")
 TOOL_KINDS = {
     "list_dir": "read",
     "read_file": "read",
@@ -30,14 +34,15 @@ TOOL_KINDS = {
     "request_write": "ask",
 }
 VERBS = {
-    "add": ("add", "implement", "create", "introduce", "build", "new"),
+    "add": ("add", "implement", "create", "introduce", "build", "new", "support"),
     "delete": ("remove", "delete", "drop", "deprecate"),
     "update": ("update", "change", "fix", "modify", "rename", "refactor", "bump", "migrate"),
 }
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
-PATH_EXTENSIONS = (".py", ".yaml", ".yml", ".json", ".md", ".toml", ".sql", ".txt", ".cfg", ".ini")
+PATH_EXTENSIONS = (".py", ".go", ".ts", ".js", ".java", ".yaml", ".yml", ".json", ".md", ".toml", ".sql", ".txt", ".tf")
 MAX_READ_CHARS = 60_000
 MAX_GREP_HITS = 100
+TEST_TIMEOUT_S = 600
 
 Approver = Callable[[str, str], tuple[bool, str]]
 _FROM_ENV = object()
@@ -63,9 +68,8 @@ def extract_paths(ticket_text: str) -> list[str]:
     return found
 
 
-def env_approver() -> Approver:
-    """SCOPE_APPROVAL=auto (default, approve and flag), deny, or prompt (ask in the terminal)."""
-    policy = os.environ.get("SCOPE_APPROVAL", "auto")
+def make_approver(policy: str) -> Approver:
+    """auto (approve and flag in the summary), deny, or prompt (ask in the terminal)."""
 
     def approve(path: str, reason: str) -> tuple[bool, str]:
         if policy == "deny":
@@ -98,32 +102,38 @@ class Gateway:
         ticket_id: str,
         ticket_text: str,
         repo_root: str | Path,
-        mode: str = "scoped",
+        mode: str = "envelope",
         *,
+        config: Config | None = None,
         store: Store | None | object = _FROM_ENV,
         approver: Approver | None = None,
-        test_command: list[str] | None = None,
+        model: str | None = None,
+        before: datetime | None = None,
         verbose: bool = True,
     ):
-        if mode not in ("raw", "scoped"):
-            raise ValueError("mode must be 'raw' or 'scoped'")
-        self.ticket_id = ticket_id
-        self.ticket_text = ticket_text
-        self.mode = mode
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}")
         self.repo_root = Path(repo_root).resolve()
         if not self.repo_root.is_dir():
             raise FileNotFoundError(f"repo_root does not exist: {self.repo_root}")
+        self.config = config or load_config(self.repo_root)
+        self.ticket_id = ticket_id
+        self.ticket_text = ticket_text
+        self.mode = mode
+        self.model = model or self.config.model
+        self.repo = self.config.repo
+        self.before = before  # replaying an old ticket: only learn from history before it
         self.store: Store | None = Store.from_env() if store is _FROM_ENV else store  # type: ignore[assignment]
-        self.approver = approver or env_approver()
-        self.test_command = test_command or [sys.executable, "-m", "pytest", "-q", "-x"]
+        self.approver = approver or make_approver(self.config.approval)
         self.verbose = verbose
+        self.is_git = (self.repo_root / ".git").exists()
 
         self.run_id = uuid.uuid4().hex[:12]
-        self.subject = extract_subject(ticket_text)
+        self.subject = extract_subject(ticket_text, self.config.subject_patterns)
         self.verb = extract_verb(ticket_text)
         self.ticket_paths = extract_paths(ticket_text)
-        # Raw runs fetch the scope too, but never use it: it only measures noise for the comparison.
-        self.scope: Scope | None = self.store.get_scope(ticket_text, self.verb, self.subject) if self.store else None
+        # Lazy runs fetch the scope too, but never use it: it only measures noise for the comparison.
+        self.scope: Scope | None = self._fetch_scope()
 
         self.step = 0
         self.calls = 0
@@ -134,16 +144,17 @@ class Gateway:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cost_usd = 0.0
-        self.token_steps: list[int] = []
+        self.cost_sources: set[str] = set()
         self.finished = False
+        self._log_failed = False
 
         self._log("scope", decision="start", extra={"scope": self._scope_for_log()})
 
-    # --- what the agent owner calls ---------------------------------------------
+    # --- what the agent calls ------------------------------------------------------
 
     @property
     def enforcing(self) -> bool:
-        return self.mode == "scoped"
+        return self.mode == "envelope"
 
     def scope_prompt(self) -> str:
         return render_prompt(self.scope) if self.enforcing else ""
@@ -153,15 +164,19 @@ class Gateway:
 
         return langchain_tools(self)
 
-    def record_llm_step(self, prompt_tokens: int, completion_tokens: int = 0, cost_usd: float = 0.0) -> None:
+    def record_llm_step(
+        self, prompt_tokens: int, completion_tokens: int = 0, cost_usd: float | None = None, cost_source: str = "unknown"
+    ) -> None:
+        """Report one model reply. cost_source: openrouter_billed | price_table | unknown."""
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
-        self.cost_usd += cost_usd
-        self.token_steps.append(prompt_tokens)
+        self.cost_usd += cost_usd or 0.0
+        self.cost_sources.add(cost_source)
         self._log("llm", decision="llm", extra={
             "step_prompt_tokens": prompt_tokens,
             "step_completion_tokens": completion_tokens,
             "step_cost_usd": cost_usd,
+            "cost_source": cost_source,
         })
 
     def call(self, tool: str, args: dict) -> str:
@@ -176,14 +191,23 @@ class Gateway:
             if kind == "ask":
                 return self._request_write(args)
             if kind == "exec":
-                return self._counted(tool, None, "exec", self._run_tests())
+                return self._counted(tool, None, "exec", self._run_tests()[1])
             return self._read(tool, args)
         except (OSError, ValueError, re.error, subprocess.SubprocessError) as exc:
             self._log(tool, path=args.get("path"), decision="error", reason=str(exc))
             return f"Error: {exc}"
 
+    def run_checks(self) -> dict:
+        """Run the repo's test command once after the agent stops. Not counted as an agent call."""
+        if not self.config.test_argv:
+            self._log("checks", decision="skipped", reason="no test_command configured")
+            return {"passed": 0, "total": 0}
+        ok, output = self._run_tests()
+        self._log("checks", decision="passed" if ok else "failed", reason=output.splitlines()[0] if output else "")
+        return {"passed": int(ok), "total": 1}
+
     def finish(self, checks: dict) -> dict:
-        """Save the run as a footprint if it passed, and return the summary the TUI shows."""
+        """Save the run as a footprint if it passed, and return the summary the viewer shows."""
         if self.finished:
             raise RuntimeError("finish() was already called for this run")
         self.finished = True
@@ -193,11 +217,15 @@ class Gateway:
         changed, added = self._diff()
         footprint = {
             "run_id": self.run_id,
+            "source": "agent_run",
+            "repo": self.repo,
             "ticket": self.ticket_id,
             "text": self.ticket_text,
+            "merged_at": datetime.now(UTC),  # same field as mined PRs, so replay cutoffs apply to both
             "verb": self.verb,
             "subject": self.subject,
             "condition": self.mode,
+            "model": self.model,
             "success": passed,
             "files_read": sorted({normalize(p, self.subject) for p in self.files_read}),
             "files_changed": sorted({normalize(p, self.subject) for p in changed}),
@@ -208,17 +236,23 @@ class Gateway:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cost_usd": round(self.cost_usd, 6),
+            "cost_source": self._cost_source(),
             "checks": {"passed": int(checks.get("passed", 0)), "total": total},
         }
 
-        saved, why = False, "checks failed" if not passed else "no Atlas connection"
+        saved, why = False, ("checks failed" if total else "no checks ran") if not passed else "no Atlas connection"
         if passed and self.store:
-            self.store.save_footprint(footprint)
-            saved, why = True, "passed"
+            try:
+                self.store.save_footprint(footprint)
+                saved, why = True, "passed"
+            except Exception as exc:  # telemetry must not break the run
+                why = f"save failed: {type(exc).__name__}"
+                log.warning("could not save footprint for %s: %s", self.ticket_id, exc)
 
         summary = {
             "ticket": self.ticket_id,
             "condition": self.mode,
+            "model": self.model,
             "passed": passed,
             "checks": footprint["checks"],
             "calls": self.calls,
@@ -229,6 +263,7 @@ class Gateway:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cost_usd": round(self.cost_usd, 6),
+            "cost_source": footprint["cost_source"],
             "scope_expansions": sorted(self.approved),
             "footprint_saved": saved,
             "footprint_reason": why,
@@ -239,7 +274,7 @@ class Gateway:
         self._log("finish", decision="finish", extra={"summary": summary})
         return summary
 
-    # --- tools -----------------------------------------------------------------
+    # --- tools -----------------------------------------------------------------------
 
     def _resolve(self, path: str | None) -> tuple[Path, str]:
         candidate = (self.repo_root / (path or ".")).resolve()
@@ -248,15 +283,25 @@ class Gateway:
         rel = candidate.relative_to(self.repo_root).as_posix()
         return candidate, "." if rel == "" else rel
 
+    def _repo_files(self) -> list[str]:
+        """Files the agent can see. In a git repo this respects .gitignore and includes new files."""
+        if self.is_git:
+            out = subprocess.run(
+                ["git", "-C", str(self.repo_root), "ls-files", "--cached", "--others", "--exclude-standard"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if out.returncode == 0:
+                return [p for p in out.stdout.splitlines() if (self.repo_root / p).is_file()]
+        return sorted(
+            p.relative_to(self.repo_root).as_posix()
+            for p in self.repo_root.rglob("*")
+            if p.is_file() and not SKIP_DIRS.intersection(p.relative_to(self.repo_root).parts)
+        )
+
     def _read(self, tool: str, args: dict) -> str:
         target, rel = self._resolve(args.get("path"))
         if tool == "list_dir":
-            if not target.is_dir():
-                raise ValueError(f"not a directory: {rel}")
-            entries = sorted(
-                (e.name + "/" if e.is_dir() else e.name) for e in target.iterdir() if e.name not in SKIP_DIRS
-            )
-            return self._counted(tool, rel, "read", "\n".join(entries) or "(empty)")
+            return self._counted(tool, rel, "read", self._list_dir(target, rel))
         if tool == "read_file":
             if not target.is_file():
                 raise ValueError(f"file not found: {rel}")
@@ -266,28 +311,39 @@ class Gateway:
             if len(text) > MAX_READ_CHARS:
                 text = text[:MAX_READ_CHARS] + f"\n... (truncated, {len(text)} chars total)"
             return self._counted(tool, rel, "read", text)
-        return self._counted(tool, rel, "read", self._grep(args.get("pattern", ""), target))
+        return self._counted(tool, rel, "read", self._grep(args.get("pattern", ""), rel))
 
-    def _grep(self, pattern: str, target: Path) -> str:
+    def _list_dir(self, target: Path, rel: str) -> str:
+        if not target.is_dir():
+            raise ValueError(f"not a directory: {rel}")
+        prefix = "" if rel == "." else rel + "/"
+        entries = set()
+        for path in self._repo_files():
+            if path.startswith(prefix):
+                head, _, tail = path[len(prefix):].partition("/")
+                entries.add(head + "/" if tail else head)
+        return "\n".join(sorted(entries)) or "(empty)"
+
+    def _grep(self, pattern: str, rel: str) -> str:
         if not pattern:
             raise ValueError("grep needs a pattern")
         try:
             regex = re.compile(pattern)
         except re.error:
             regex = re.compile(re.escape(pattern))
-        files = [target] if target.is_file() else sorted(
-            p for p in target.rglob("*") if p.is_file() and not SKIP_DIRS.intersection(p.parts)
-        )
+        prefix = "" if rel == "." else rel.rstrip("/")
+        files = [p for p in self._repo_files() if not prefix or p == prefix or p.startswith(prefix + "/")]
         hits = []
-        for file in files:
+        for path in files:
             try:
-                for n, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
-                    if regex.search(line):
-                        hits.append(f"{file.relative_to(self.repo_root).as_posix()}:{n}: {line.strip()}")
-                        if len(hits) >= MAX_GREP_HITS:
-                            return "\n".join(hits) + f"\n... (stopped at {MAX_GREP_HITS} matches)"
-            except OSError:
+                text = (self.repo_root / path).read_text(errors="strict")
+            except (OSError, UnicodeDecodeError):  # skip binary and unreadable files
                 continue
+            for n, line in enumerate(text.splitlines(), 1):
+                if regex.search(line):
+                    hits.append(f"{path}:{n}: {line.strip()[:300]}")
+                    if len(hits) >= MAX_GREP_HITS:
+                        return "\n".join(hits) + f"\n... (stopped at {MAX_GREP_HITS} matches)"
         return "\n".join(hits) or "(no matches)"
 
     def _write(self, args: dict) -> str:
@@ -314,18 +370,30 @@ class Gateway:
             return self._counted("request_write", rel, "approved", f"Approved: you may now write {rel}.", reason=note)
         return self._counted("request_write", rel, "denied", f"Denied: do not write {rel}.", reason=note)
 
-    def _run_tests(self) -> str:
-        proc = subprocess.run(
-            self.test_command, cwd=self.repo_root, capture_output=True, text=True, timeout=300
-        )
+    def _run_tests(self) -> tuple[bool, str]:
+        argv = self.config.test_argv
+        if not argv:
+            return False, "No test command is configured for this repo (set test_command in .scope-envelope.toml)."
+        if argv[0] == "python":  # use the interpreter running the gateway, not whatever is first on PATH
+            argv = [sys.executable, *argv[1:]]
+        proc = subprocess.run(argv, cwd=self.repo_root, capture_output=True, text=True, timeout=TEST_TIMEOUT_S)
         tail = (proc.stdout + proc.stderr).strip().splitlines()[-60:]
-        return f"exit code {proc.returncode}\n" + "\n".join(tail)
+        return proc.returncode == 0, f"exit code {proc.returncode}\n" + "\n".join(tail)
 
-    # --- decisions -------------------------------------------------------------
+    # --- decisions ---------------------------------------------------------------------
+
+    def _fetch_scope(self) -> Scope | None:
+        if not self.store:
+            return None
+        try:
+            return self.store.get_scope(self.ticket_text, self.verb, self.subject, repo=self.repo, before=self.before)
+        except Exception as exc:  # no Atlas means no scope, not a crashed run
+            log.warning("could not fetch scope for %s: %s", self.ticket_id, exc)
+            return None
 
     def _write_decision(self, rel: str) -> tuple[bool, str]:
         if not self.enforcing:
-            return True, "raw run (observe only)"
+            return True, "lazy run (observe only)"
         if rel in self.approved:
             return True, "approved by a person"
         for named in self.ticket_paths:
@@ -354,7 +422,7 @@ class Gateway:
             result += f"\n[gateway] {self.calls} of about {budget} expected tool calls used. Finish the remaining work and stop."
         return result
 
-    # --- reporting -------------------------------------------------------------
+    # --- reporting ---------------------------------------------------------------------
 
     def _diff(self) -> tuple[list[str], list[str]]:
         changed, added = [], []
@@ -365,6 +433,10 @@ class Gateway:
                 changed.append(rel)
                 added.extend(_added_lines(old, new))
         return changed, added
+
+    def _cost_source(self) -> str:
+        sources = self.cost_sources - {"unknown"} or self.cost_sources
+        return sources.pop() if len(sources) == 1 else ("mixed" if sources else "none")
 
     def _noise_files(self) -> int | None:
         if not (self.scope and self.scope.usable):
@@ -392,35 +464,50 @@ class Gateway:
             return None
         return self.scope.to_dict()
 
+    def _scope_files(self) -> list[str]:
+        """Concrete files in the learned scope, for the viewer's dashed 'learned scope' tiles."""
+        if not (self.enforcing and self.scope and self.scope.usable):
+            return []
+        return sorted(set(self.scope.concrete(self.scope.files_changed) + self.scope.concrete(self.scope.files_read)))
+
     def _log(self, tool: str, *, path: str | None = None, decision: str, reason: str = "", extra: dict | None = None) -> None:
-        if tool != "scope" or decision != "start":
+        if tool != "scope":
             self.step += 1
         event = {
             "run_id": self.run_id,
             "ticket": self.ticket_id,
+            "repo": self.repo,
             "condition": self.mode,
+            "model": self.model,
             "step": self.step,
             "tool": tool,
             "path": path,
             "decision": decision,
             "reason": reason,
             "scope_based_on": self.scope.based_on if (self.enforcing and self.scope) else [],
+            "scope_files": self._scope_files(),
             "totals": {
                 "calls": self.calls,
                 "blocked": self.blocked,
                 "files_read": len(self.files_read),
                 "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
                 "cost_usd": round(self.cost_usd, 6),
             },
             "ts": datetime.now(UTC),
             **(extra or {}),
         }
         if self.store:
-            self.store.log(event)
+            try:
+                self.store.log(event)
+            except Exception as exc:  # telemetry must never break the agent's work
+                if not self._log_failed:
+                    log.warning("could not write to runs (continuing without telemetry): %s", exc)
+                    self._log_failed = True
         if self.verbose:
             where = f" {path}" if path else ""
             note = f" ({reason})" if reason else ""
             print(f"[{self.mode} {self.ticket_id} #{self.step}] {tool}{where} -> {decision}{note}", file=sys.stderr)
 
 
-__all__ = ["Gateway", "extract_paths", "extract_verb"]
+__all__ = ["Gateway", "MODES", "extract_paths", "extract_verb"]

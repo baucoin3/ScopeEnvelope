@@ -39,7 +39,7 @@ def footprint(ticket: str, text: str, calls: int) -> dict:
         "text": text,
         "verb": extract_verb(text),
         "subject": extract_subject(text),
-        "condition": "raw",
+        "condition": "lazy",
         "success": True,
         "files_read": ["pipeline/consumers/user_activity_consumer.py", "pipeline/registry.py"],
         "files_changed": COMMON_CHANGED + (["utils/strings.py"] if ticket == "PIPE-1820" else []),

@@ -12,7 +12,7 @@ class FakeStore:
         self.footprints = []
         self.events = []
 
-    def get_scope(self, ticket_text, verb, subject):
+    def get_scope(self, ticket_text, verb, subject, repo=None, before=None):
         if self.scope is not None:
             self.scope.subject = subject
         return self.scope
@@ -52,13 +52,13 @@ def repo(tmp_path):
     return tmp_path
 
 
-def make(repo, mode="scoped", scope=None, approver=None, ticket=TICKET):
+def make(repo, mode="envelope", scope=None, approver=None, ticket=TICKET):
     store = FakeStore(scope)
     return Gateway("PIPE-2031", ticket, repo, mode, store=store, approver=approver, verbose=False), store
 
 
-def test_raw_mode_allows_any_write_and_injects_nothing(repo):
-    gw, _ = make(repo, mode="raw", scope=learned_scope())
+def test_lazy_mode_allows_any_write_and_injects_nothing(repo):
+    gw, _ = make(repo, mode="lazy", scope=learned_scope())
     assert gw.scope_prompt() == ""
     assert gw.call("write_file", {"path": "utils/strings.py", "content": "x\n"}) == "Wrote utils/strings.py"
 
@@ -104,17 +104,17 @@ def test_no_scope_means_writes_need_approval(repo):
 
 
 def test_paths_outside_repo_are_rejected(repo):
-    gw, _ = make(repo, mode="raw")
+    gw, _ = make(repo, mode="lazy")
     assert gw.call("read_file", {"path": "../../etc/passwd"}).startswith("Error: path is outside the repo")
 
 
 def test_unknown_tool_is_an_error(repo):
-    gw, _ = make(repo, mode="raw")
+    gw, _ = make(repo, mode="lazy")
     assert gw.call("bash", {"cmd": "rm -rf /"}).startswith("Error: unknown tool")
 
 
 def test_reads_and_grep(repo):
-    gw, _ = make(repo, mode="raw")
+    gw, _ = make(repo, mode="lazy")
     assert "consumers/" in gw.call("list_dir", {"path": "pipeline"})
     assert "UserActivityConsumer" in gw.call("read_file", {"path": "pipeline/consumers/user_activity_consumer.py"})
     assert "pipeline/registry.py:1:" in gw.call("grep", {"pattern": "CONSUMERS", "path": "."})
@@ -152,13 +152,13 @@ def test_finish_saves_normalized_footprint_and_reports_lines(repo):
 
 
 def test_failed_run_is_not_saved(repo):
-    gw, store = make(repo, mode="raw")
+    gw, store = make(repo, mode="lazy")
     summary = gw.finish({"passed": 7, "total": 10})
     assert store.footprints == [] and summary["footprint_reason"] == "checks failed"
 
 
 def test_finish_twice_raises(repo):
-    gw, _ = make(repo, mode="raw")
+    gw, _ = make(repo, mode="lazy")
     gw.finish({"passed": 1, "total": 1})
     with pytest.raises(RuntimeError):
         gw.finish({"passed": 1, "total": 1})

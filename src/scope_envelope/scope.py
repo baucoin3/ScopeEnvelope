@@ -75,7 +75,8 @@ def scope_from_facets(doc: dict | None, subject: str | None) -> Scope:
         return Scope(confidence="none", subject=subject, matched=int(meta.get("matched") or 0), top_score=top_score)
 
     strong = top_score >= STRONG_SCORE and lean_runs >= STRONG_MIN_RUNS
-    median_calls = statistics.median(meta["calls"]) if meta.get("calls") else None
+    calls = [c for c in (meta.get("calls") or []) if c is not None]  # mined PRs have no call count
+    median_calls = statistics.median(calls) if calls else None
     budget = None
     if median_calls is not None:
         budget = int(round(median_calls)) + (STRONG_HEADROOM if strong else WEAK_HEADROOM)

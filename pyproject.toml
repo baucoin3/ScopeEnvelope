@@ -7,9 +7,21 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "langchain-core>=1.8.0",
     "pymongo>=4.20.0",
     "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+scope-envelope = "scope_envelope.cli:main"
+
+[project.optional-dependencies]
+agent = [
+    "langchain>=1.5.0",
+    "langchain-core>=1.8.0",
+    "langchain-openai>=1.8.0",
+]
+viewer = [
+    "rich>=15.0.0",
 ]
 
 [build-system]
