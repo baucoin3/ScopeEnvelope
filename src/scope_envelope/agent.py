@@ -46,6 +46,8 @@ BASE_SYSTEM_PROMPT = (
     "Use the available tools to explore the repo, read relevant files, "
     "make the smallest edit that satisfies the ticket, and verify your "
     "change with run_tests. All paths are relative to the repo root. "
+    "Work efficiently: when you need several files, request them in the same turn (parallel tool calls), "
+    "and prefer grep over reading whole files. "
     "When you are done, summarize what you changed in your final answer."
 )
 
@@ -61,6 +63,10 @@ class TokenBudgetExceeded(RuntimeError):
     pass
 
 
+class TimeLimitReached(RuntimeError):
+    pass
+
+
 class UsageReporter(BaseCallbackHandler):
     """Reports tokens and cost to the gateway after every model reply, so the viewer updates live.
 
@@ -69,9 +75,18 @@ class UsageReporter(BaseCallbackHandler):
 
     raise_error = True  # let TokenBudgetExceeded stop the agent instead of being swallowed
 
-    def __init__(self, gateway: Gateway, max_prompt_tokens: int | None = None):
+    def __init__(self, gateway: Gateway, max_prompt_tokens: int | None = None, max_seconds: int = 0):
         self.gateway = gateway
         self.max_prompt_tokens = max_prompt_tokens
+        self.max_seconds = max_seconds
+        self.started = time.monotonic()
+
+    def on_llm_start(self, *args, **kwargs) -> None:
+        elapsed = time.monotonic() - self.started
+        if self.max_seconds and elapsed >= self.max_seconds:
+            raise TimeLimitReached(f"time limit of {self.max_seconds}s reached")
+
+    on_chat_model_start = on_llm_start
 
     def _check_budget(self) -> None:
         if self.max_prompt_tokens and self.gateway.prompt_tokens >= self.max_prompt_tokens:
@@ -97,7 +112,7 @@ class UsageReporter(BaseCallbackHandler):
         self._check_budget()
 
 
-def build_model(model: str) -> ChatOpenAI:
+def build_model(model: str, reasoning: bool = False) -> ChatOpenAI:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is not set. Add it to .env (see .env.example).")
@@ -108,7 +123,8 @@ def build_model(model: str) -> ChatOpenAI:
         api_key=api_key,
         base_url=OPENROUTER_URL,
         temperature=0,
-        extra_body={"usage": {"include": True}},
+        # reasoning off: no "thinking" tokens before each reply, about twice as fast per call.
+        extra_body={"usage": {"include": True}, "reasoning": {"enabled": reasoning}},
     )
 
 
@@ -219,7 +235,7 @@ def run_ticket(
     """
     load_env()
     config = load_config(repo_root)
-    llm = build_model(model or config.model)  # fail on a missing API key before anything is logged
+    llm = build_model(model or config.model, config.reasoning)  # fail on a missing API key before anything is logged
     t = fetch_ticket(ticket)
     store = Store.from_env()
     run_id = run_id or uuid.uuid4().hex[:12]
@@ -237,17 +253,24 @@ def run_ticket(
     )
     agent = create_agent(model=llm, tools=gw.tools(), system_prompt=BASE_SYSTEM_PROMPT + gw.scope_prompt())
     final_answer = ""
+    started = time.monotonic()
     try:
         result = agent.invoke(
             {"messages": [{"role": "user", "content": t.text + (f"\n\nFrom the developer: {instructions}" if instructions else "")}]},
             # One tool call is a model step plus a tool step, so allow about two graph steps per call.
-            config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw, config.max_prompt_tokens)]},
+            config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw, config.max_prompt_tokens, config.max_seconds)]},
         )
         messages = result.get("messages", [])
         final_answer = str(messages[-1].content) if messages else ""
+        stopped = None
+    except (TimeLimitReached, TokenBudgetExceeded) as exc:
+        final_answer, stopped = f"Run stopped: {exc}", str(exc)
     except Exception as exc:  # hitting the step limit or a model error still ends with checks and a summary
         final_answer = f"Run stopped: {type(exc).__name__}: {exc}"
+        stopped = type(exc).__name__
     summary = gw.finish(gw.run_checks())
+    summary["stopped"] = stopped
+    summary["elapsed_s"] = round(time.monotonic() - started, 1)
     summary["workspace"] = str(work_root)
     summary["learned"] = learned
     summary["final_answer"] = final_answer

@@ -46,6 +46,8 @@ class Config:
     learn_limit: int = 100  # how many ticket-linked PRs auto-learn ingests
     learn_max_age_days: int = 7  # history older than this is refreshed
     max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS  # hard stop: total prompt tokens per run
+    max_seconds: int = 0  # hard stop: wall-clock seconds per run (0 = no limit); SCOPE_MAX_SECONDS overrides
+    reasoning: bool = False  # let the model 'think' before answering: better on hard tickets, much slower
 
     @property
     def test_argv(self) -> list[str] | None:
@@ -55,6 +57,7 @@ class Config:
 KEYS = (
     "repo", "test_command", "subject_patterns", "approval", "model", "max_calls",
     "save_unchecked", "auto_learn", "learn_limit", "learn_max_age_days", "max_prompt_tokens",
+    "max_seconds", "reasoning",
 )
 
 
@@ -102,6 +105,10 @@ def load_config(root: str | Path) -> Config:
                 setattr(config, key, (value or None) if key in ("repo", "test_command") else value)
     config.model = os.environ.get("MODEL", config.model)
     config.approval = os.environ.get("SCOPE_APPROVAL", config.approval)
+    if os.environ.get("SCOPE_MAX_SECONDS"):
+        config.max_seconds = int(os.environ["SCOPE_MAX_SECONDS"])
+    if os.environ.get("SCOPE_REASONING"):
+        config.reasoning = os.environ["SCOPE_REASONING"].lower() in ("1", "on", "true", "yes")
     return config
 
 

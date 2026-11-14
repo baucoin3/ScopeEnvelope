@@ -167,8 +167,10 @@ def _run(console: Console, link: str, instructions: str, gateway_on: bool, ui_ur
         console.print(f"[red]Run failed: {type(exc).__name__}: {exc}[/]")
         return
 
+    if summary.get("stopped"):
+        console.print(f"[bold yellow]■ Stopped: {summary['stopped']}[/] (did not finish the ticket)")
     console.print(
-        f"[bold green]✓ Done[/]: {summary['calls']} calls · {summary['files_read']} files read · "
+        f"[bold green]✓ Done[/] in {summary.get('elapsed_s', '?')}s: {summary['calls']} calls · {summary['files_read']} files read · "
         f"{summary['prompt_tokens']:,} prompt tokens · ${summary['cost_usd']:.4f}"
         + (f" · {summary['blocked']} blocked" if summary.get("blocked") else "")
     )

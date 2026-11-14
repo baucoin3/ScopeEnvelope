@@ -219,3 +219,21 @@ def test_edit_file_changes_one_snippet_and_follows_scope(tmp_path):
     assert (tmp_path / "big.go").read_text().count("\n") == 1201 and "DONE" in (tmp_path / "big.go").read_text()
     assert store.events[-1]["tool"] == "write_file" and "+DONE" in store.events[-1]["diff"]
     assert "exactly once" in gw.call("edit_file", {"path": "big.go", "old_text": "a", "new_text": "z"})
+
+
+def test_time_limit_stops_before_the_next_model_call(tmp_path):
+    gw = Gateway("t", "t", tmp_path, "lazy", config=Config(root=tmp_path), store=None, verbose=False)
+    reporter = agent_mod.UsageReporter(gw, max_seconds=30)
+    reporter.on_llm_start()  # within the limit: fine
+    reporter.started -= 31
+    with pytest.raises(agent_mod.TimeLimitReached):
+        reporter.on_chat_model_start()
+
+
+def test_reasoning_off_by_default(monkeypatch, tmp_path):
+    from scope_envelope.config import load_config
+    assert load_config(tmp_path).reasoning is False
+    monkeypatch.setenv("SCOPE_REASONING", "on")
+    monkeypatch.setenv("SCOPE_MAX_SECONDS", "35")
+    config = load_config(tmp_path)
+    assert config.reasoning is True and config.max_seconds == 35
