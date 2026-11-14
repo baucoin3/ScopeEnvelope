@@ -40,7 +40,7 @@ class ConditionGraph {
         ctx.arc(node.x, node.y, 8, 0, 2 * Math.PI, false);
         ctx.fill();
       })
-      .cooldownTicks(Infinity);
+      .cooldownTime(3000); // settle after 3s; graphData() updates re-heat it. Infinity kept every graph animating forever.
     this.graph.graphData({ nodes: [], links: [] });
     // Pin a fixed, zoomed-out starting scale instead of fitting to content --
     // fitting to content looks fine once there are a couple dozen nodes, but
@@ -68,6 +68,20 @@ class ConditionGraph {
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
     ctx.fillStyle = COLORS[node.status] || "#999";
     ctx.fill();
+
+    if (node.id === this.currentId) {
+      // "Agent is here": the file touched most recently (read, write or blocked write).
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r + 6, 0, 2 * Math.PI, false);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#ffd54f";
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r + 10, 0, 2 * Math.PI, false);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255, 213, 79, 0.35)";
+      ctx.stroke();
+    }
 
     if (node.inScope) {
       ctx.setLineDash([2, 2]);
@@ -100,6 +114,25 @@ class ConditionGraph {
   }
 
   _refresh() {
+    if (this._refreshPending) return;
+    this._refreshPending = true;
+    requestAnimationFrame(() => {
+      this._refreshPending = false;
+      this._refreshNow();
+    });
+  }
+
+  reset() {
+    // Reuse this graph for the next run: creating a new ForceGraph per run leaked the old one's animation loop.
+    this.nodes.clear();
+    this.links = [];
+    this.lastGoodId = null;
+    this.currentId = null;
+    this.filesRead = new Set();
+    this._refreshNow();
+  }
+
+  _refreshNow() {
     this.graph.graphData({
       nodes: Array.from(this.nodes.values()),
       links: this.links.slice(),
@@ -123,6 +156,7 @@ class ConditionGraph {
       return;
     }
 
+    this.currentId = evt.path; // move the yellow "agent is here" ring
     if (evt.tool === "read_file") this.filesRead.add(evt.path);
 
     if (evt.type === "blocked") {
@@ -218,7 +252,7 @@ class Dashboard {
     });
     const ds = this.chart.data.datasets.find((d) => d.label === condition);
     ds.data.push({ x: evt.step, y: this.metric === "tokens" ? evt.prompt_tokens_cum : evt.cost_usd_cum });
-    this.chart.update();
+    this._updateChartSoon();
   }
 
   _updateCounters(condition, evt) {
@@ -230,10 +264,17 @@ class Dashboard {
       evt.cost_usd_cum != null ? `$${evt.cost_usd_cum.toFixed(5)}` : "--";
   }
 
+  _updateChartSoon() {
+    if (this._chartPending) return;
+    this._chartPending = true;
+    requestAnimationFrame(() => {
+      this._chartPending = false;
+      this.chart.update("none");
+    });
+  }
+
   _resetCondition(condition) {
-    const el = document.getElementById(`graph-${condition}`);
-    el.innerHTML = "";
-    this.graphs[condition] = new ConditionGraph(condition, el);
+    this.graphs[condition].reset();
     this.trendData[condition] = [];
     const ds = this.chart.data.datasets.find((d) => d.label === condition);
     ds.data = [];

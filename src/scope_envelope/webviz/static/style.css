@@ -158,3 +158,10 @@ header h1 {
   align-items: center;
   gap: 6px;
 }
+
+/* "agent is here": yellow ring, matching the canvas highlight */
+.dot.current {
+  background: transparent;
+  border: 3px solid #ffd54f;
+  box-shadow: 0 0 0 2px rgba(255, 213, 79, 0.35);
+}
