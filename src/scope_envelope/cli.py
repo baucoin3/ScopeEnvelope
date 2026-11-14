@@ -87,8 +87,22 @@ def cmd_scope(args: argparse.Namespace) -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     from .agent import run_ticket
 
+    # Interactive when arguments are left out: handy for live demos.
+    ticket = args.ticket or input("Ticket (link, owner/repo#123 or text): ").strip()
+    if not ticket:
+        sys.exit("No ticket given.")
+    condition = args.condition
+    if condition is None:
+        answer = input("Condition [lazy/envelope] (default envelope): ").strip().lower()
+        condition = answer if answer in MODES else "envelope"
     summary = run_ticket(
-        args.ticket, repo_root=args.repo_root, condition=args.condition, model=args.model, before=_date(args.before)
+        ticket,
+        repo_root=args.repo_root,
+        condition=condition,
+        model=args.model,
+        before=_date(args.before),
+        base=args.base,
+        in_place=args.in_place,
     )
     print(json.dumps(summary, indent=2, default=str))
 
@@ -130,11 +144,13 @@ def main(argv: list[str] | None = None) -> None:
     scope.add_argument("--before", help="only learn from history before this date (YYYY-MM-DD)")
     scope.set_defaults(func=cmd_scope)
 
-    run = sub.add_parser("run", help="run the agent on a ticket")
-    run.add_argument("ticket", help="GitHub issue link, owner/repo#123, or ticket text")
-    run.add_argument("--condition", choices=MODES, default="envelope")
+    run = sub.add_parser("run", help="run the agent on a ticket (asks for anything left out)")
+    run.add_argument("ticket", nargs="?", help="GitHub issue link, owner/repo#123, or ticket text")
+    run.add_argument("--condition", choices=MODES, help="lazy (no scope) or envelope (default when asked)")
     run.add_argument("--model", help="OpenRouter model id (default: config or MODEL env)")
     run.add_argument("--before", help="only learn from history before this date (YYYY-MM-DD)")
+    run.add_argument("--base", default="HEAD", help="git commit the fresh workspace starts from (default HEAD)")
+    run.add_argument("--in-place", action="store_true", help="work directly in --repo-root instead of a fresh copy")
     run.set_defaults(func=cmd_run)
 
     view = sub.add_parser("view", help="live map of a run")

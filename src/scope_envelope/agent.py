@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 from langchain.agents import create_agent
@@ -17,6 +18,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
 
+from . import workspace
 from .config import load_config
 from .gateway import Gateway
 from .tickets import fetch_ticket
@@ -74,8 +76,15 @@ def build_model(model: str) -> ChatOpenAI:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is not set. Add it to .env (see .env.example).")
+    # temperature=0 keeps lazy vs envelope comparisons as repeatable as the model allows.
     # usage.include asks OpenRouter to return the billed cost with every reply.
-    return ChatOpenAI(model=model, api_key=api_key, base_url=OPENROUTER_URL, extra_body={"usage": {"include": True}})
+    return ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=OPENROUTER_URL,
+        temperature=0,
+        extra_body={"usage": {"include": True}},
+    )
 
 
 def run_ticket(
@@ -85,15 +94,22 @@ def run_ticket(
     condition: str = "envelope",
     model: str | None = None,
     before: datetime | None = None,
+    base: str = "HEAD",
+    in_place: bool = False,
     verbose: bool = True,
 ) -> dict:
-    """Run one ticket (a GitHub issue link, owner/repo#123, or plain text) and return the run summary."""
+    """Run one ticket (a GitHub issue link, owner/repo#123, or plain text) and return the run summary.
+
+    By default the agent works in a fresh copy of the repo at `base` (see workspace.py), so
+    lazy and envelope runs start from the same state and your checkout is never touched.
+    """
     load_dotenv(find_dotenv(usecwd=True))
     config = load_config(repo_root)
     llm = build_model(model or config.model)  # fail on a missing API key before anything is logged
     ticket_id, ticket_text = fetch_ticket(ticket)
+    work_root = Path(repo_root).resolve() if in_place else workspace.prepare(repo_root, ticket_id, condition, base)
     gw = Gateway(
-        ticket_id, ticket_text, repo_root, condition, config=config, model=model, before=before, verbose=verbose
+        ticket_id, ticket_text, work_root, condition, config=config, model=model, before=before, verbose=verbose
     )
     agent = create_agent(model=llm, tools=gw.tools(), system_prompt=BASE_SYSTEM_PROMPT + gw.scope_prompt())
     final_answer = ""
@@ -108,5 +124,6 @@ def run_ticket(
     except Exception as exc:  # hitting the step limit or a model error still ends with checks and a summary
         final_answer = f"Run stopped: {type(exc).__name__}: {exc}"
     summary = gw.finish(gw.run_checks())
+    summary["workspace"] = str(work_root)
     summary["final_answer"] = final_answer
     return summary

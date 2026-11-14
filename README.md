@@ -28,7 +28,9 @@ scope-envelope view owner/repo#123 --condition envelope     # terminal 1, start 
 scope-envelope run https://github.com/owner/repo/issues/123 --condition envelope   # terminal 2
 ```
 
-`--condition lazy` runs the same agent with no scope (observe only), for the side-by-side comparison.
+`--condition lazy` runs the same agent with no scope (observe only), for the side-by-side comparison. Leave out the ticket or condition and `run` asks for them.
+
+Each run works in a fresh copy of the repo, so lazy and envelope start from the same state and your checkout is never touched: a `git worktree` at `--base` (default `HEAD`; use a PR's parent commit to replay an old ticket), or a plain copy for non-git folders. Copies go to `SCOPE_WORKDIR` (default: the system temp folder) and are kept so you can inspect the change. `--in-place` skips the copy. `python -m agent.run` still works and maps the old `raw`/`scoped` names.
 
 ## .scope-envelope.toml
 

@@ -3,7 +3,9 @@
 !.env.example
 .idea/
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 runs.jsonl
+work/
