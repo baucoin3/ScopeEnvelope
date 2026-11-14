@@ -8,8 +8,12 @@ Needs the `agent` extra (langchain, langchain-openai) and OPENROUTER_API_KEY.
 
 from __future__ import annotations
 
+import logging
 import os
-from datetime import datetime
+import sys
+import time
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
@@ -19,9 +23,12 @@ from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
 
 from . import workspace
-from .config import load_config
-from .gateway import Gateway
-from .tickets import fetch_ticket
+from .config import Config, load_config
+from .gateway import Gateway, extract_verb
+from .store import Store
+from .tickets import Ticket, fetch_ticket
+
+log = logging.getLogger("scope_envelope")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
@@ -87,6 +94,61 @@ def build_model(model: str) -> ChatOpenAI:
     )
 
 
+def _event(store: Store | None, run_id: str, ticket: Ticket, condition: str, repo: str | None, **fields) -> None:
+    """A run-level event in `runs`, outside any Gateway (used while learning, before the run starts)."""
+    if store is None:
+        return
+    try:
+        store.log({
+            "run_id": run_id, "ticket": ticket.id, "repo": repo, "condition": condition,
+            "tool": "learn", "ts": datetime.now(UTC), **fields,
+        })
+    except Exception as exc:  # telemetry must not stop the run
+        log.warning("could not log learn event: %s", exc)
+
+
+def auto_learn(store: Store, config: Config, ticket: Ticket, condition: str, run_id: str) -> dict:
+    """Learn the repo first when Atlas has no recent history for it. Returns what happened."""
+    from .mine import learn, needs_learning
+
+    repo = config.repo
+    status = store.repo_status(repo)
+    if not needs_learning(status, config.learn_max_age_days):
+        _event(store, run_id, ticket, condition, repo, decision="fresh", footprints=status.get("footprints"))
+        return {"learned": False, "reason": "history is recent", "footprints": status.get("footprints")}
+
+    print(f"[scope] No recent history for {repo} in Atlas. Learning it first ...", file=sys.stderr)
+    _event(store, run_id, ticket, condition, repo, decision="start", limit=config.learn_limit)
+    store.ensure_indexes()
+    own_ticket = ticket.number if ticket.repo == repo else None
+
+    def progress(done: int, total: int) -> None:
+        if done == total or done % 10 == 0:
+            print(f"[scope] learned {done}/{total} tickets", file=sys.stderr)
+            _event(store, run_id, ticket, condition, repo, decision="progress", done=done, total=total)
+
+    report = learn(
+        repo, store, limit=config.learn_limit, exclude_issue=own_ticket,
+        before=ticket.created_at if own_ticket else None, on_progress=progress,
+    )
+    _event(store, run_id, ticket, condition, repo, decision="done", saved=report.saved)
+    print(f"[scope] saved {report.saved} footprints; waiting for Atlas to index them ...", file=sys.stderr)
+    store.wait_until_queryable(timeout_s=120)
+    for _ in range(24):  # Atlas embeds new documents asynchronously; wait until search sees them
+        if store.footprints.count_documents({"repo": repo}) and _searchable(store, ticket, repo, own_ticket):
+            break
+        time.sleep(5)
+    return {"learned": True, "saved": report.saved}
+
+
+def _searchable(store: Store, ticket: Ticket, repo: str, own_ticket: int | None) -> bool:
+    try:
+        scope = store.get_scope(ticket.text, extract_verb(ticket.text), None, repo=repo, exclude_issue=own_ticket)
+        return scope.matched > 0
+    except Exception:  # index still building
+        return False
+
+
 def run_ticket(
     ticket: str,
     *,
@@ -102,20 +164,29 @@ def run_ticket(
 
     By default the agent works in a fresh copy of the repo at `base` (see workspace.py), so
     lazy and envelope runs start from the same state and your checkout is never touched.
+    Envelope runs learn the repo's history first when Atlas has none (or it is stale).
     """
     load_dotenv(find_dotenv(usecwd=True))
     config = load_config(repo_root)
     llm = build_model(model or config.model)  # fail on a missing API key before anything is logged
-    ticket_id, ticket_text = fetch_ticket(ticket)
-    work_root = Path(repo_root).resolve() if in_place else workspace.prepare(repo_root, ticket_id, condition, base)
+    t = fetch_ticket(ticket)
+    store = Store.from_env()
+    run_id = uuid.uuid4().hex[:12]
+
+    learned = None
+    if condition == "envelope" and store and config.repo and config.auto_learn:
+        learned = auto_learn(store, config, t, condition, run_id)
+
+    work_root = Path(repo_root).resolve() if in_place else workspace.prepare(repo_root, t.id, condition, base)
     gw = Gateway(
-        ticket_id, ticket_text, work_root, condition, config=config, model=model, before=before, verbose=verbose
+        t.id, t.text, work_root, condition, config=config, store=store, model=model, before=before,
+        exclude_issue=t.number if t.repo == config.repo else None, run_id=run_id, verbose=verbose,
     )
     agent = create_agent(model=llm, tools=gw.tools(), system_prompt=BASE_SYSTEM_PROMPT + gw.scope_prompt())
     final_answer = ""
     try:
         result = agent.invoke(
-            {"messages": [{"role": "user", "content": ticket_text}]},
+            {"messages": [{"role": "user", "content": t.text}]},
             # One tool call is a model step plus a tool step, so allow about two graph steps per call.
             config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw)]},
         )
@@ -125,5 +196,6 @@ def run_ticket(
         final_answer = f"Run stopped: {type(exc).__name__}: {exc}"
     summary = gw.finish(gw.run_checks())
     summary["workspace"] = str(work_root)
+    summary["learned"] = learned
     summary["final_answer"] = final_answer
     return summary

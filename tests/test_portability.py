@@ -27,7 +27,7 @@ class RecordingStore:
     def __init__(self, scope=None):
         self.scope, self.events, self.footprints = scope, [], []
 
-    def get_scope(self, ticket_text, verb, subject, repo=None, before=None):
+    def get_scope(self, ticket_text, verb, subject, repo=None, before=None, **kwargs):
         if self.scope:
             self.scope.subject = subject
         return self.scope
@@ -145,3 +145,9 @@ def test_run_checks_uses_configured_command(tmp_path):
     config = Config(root=tmp_path, test_command="python -c 'raise SystemExit(0)'")
     gw = Gateway("t-1", "anything", tmp_path, "lazy", config=config, store=None, verbose=False)
     assert gw.run_checks() == {"passed": 1, "total": 1}
+
+
+def test_no_config_file_means_no_checks_but_repo_is_still_detected(git_repo):
+    config = load_config(git_repo)  # go.mod present, but no .scope-envelope.toml
+    assert config.repo == "acme/widgets"
+    assert config.test_command is None

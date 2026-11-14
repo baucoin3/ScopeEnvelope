@@ -40,10 +40,20 @@ class Config:
     approval: str = "auto"  # request_write policy: auto | deny | prompt
     model: str = DEFAULT_MODEL
     max_calls: int = DEFAULT_MAX_CALLS
+    save_unchecked: bool = False  # with no test_command, still save passing-looking runs as history
+    auto_learn: bool = True  # envelope runs learn the repo first when Atlas has no recent history
+    learn_limit: int = 100  # how many ticket-linked PRs auto-learn ingests
+    learn_max_age_days: int = 7  # history older than this is refreshed
 
     @property
     def test_argv(self) -> list[str] | None:
         return shlex.split(self.test_command) if self.test_command else None
+
+
+KEYS = (
+    "repo", "test_command", "subject_patterns", "approval", "model", "max_calls",
+    "save_unchecked", "auto_learn", "learn_limit", "learn_max_age_days",
+)
 
 
 def repo_from_remote(root: Path) -> str | None:
@@ -78,10 +88,13 @@ def load_config(root: str | Path) -> Config:
     MODEL and SCOPE_APPROVAL in the environment override the file.
     """
     config = defaults(Path(root))
+    # A detected test command is only a suggestion that `init` writes into the file. Without a
+    # config file nothing runs after the agent, so a fresh repo works with zero setup and no build wait.
+    config.test_command = None
     path = config.root / CONFIG_FILE
     if path.is_file():
         data = tomllib.loads(path.read_text())
-        for key in ("repo", "test_command", "subject_patterns", "approval", "model", "max_calls"):
+        for key in KEYS:
             if key in data:
                 value = data[key]
                 setattr(config, key, (value or None) if key in ("repo", "test_command") else value)
@@ -91,6 +104,8 @@ def load_config(root: str | Path) -> Config:
 
 
 def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     if isinstance(value, int):
@@ -107,6 +122,10 @@ def write_config(config: Config) -> Path:
         f"approval = {_toml_value(config.approval)}           # request_write: auto | deny | prompt",
         f"model = {_toml_value(config.model)}",
         f"max_calls = {config.max_calls}                   # tool-call limit per run",
+        f"save_unchecked = {_toml_value(config.save_unchecked)}         # no test_command: still save runs as history",
+        f"auto_learn = {_toml_value(config.auto_learn)}              # envelope runs learn the repo first if Atlas has no recent history",
+        f"learn_limit = {config.learn_limit}                # ticket-linked PRs to ingest when auto-learning",
+        f"learn_max_age_days = {config.learn_max_age_days}           # refresh history older than this",
     ]
     path = config.root / CONFIG_FILE
     path.write_text("\n".join(lines) + "\n")

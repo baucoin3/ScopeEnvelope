@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from .gateway import extract_verb
 from .normalize import extract_subject, normalize
@@ -142,19 +143,48 @@ def learn(
     limit: int = 200,
     max_files: int = 25,
     require_issue: bool = True,
+    before: datetime | None = None,
+    exclude_issue: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
     workers: int = 8,
 ) -> LearnReport:
     """Mine merged PRs into the footprints collection. Safe to re-run: PRs are upserted.
 
     With require_issue (the default), only PRs that close a ticket are learned, because
-    the ticket is what a future ticket will be matched against.
+    the ticket is what a future ticket will be matched against. `before` and
+    `exclude_issue` keep the ticket being worked on from learning its own fix.
     """
+    if before:
+        search = f"{search} merged:<{before.date().isoformat()}".strip()
+    if require_issue and "linked:" not in search:
+        search = f"{search} linked:issue".strip()
     prs = list_merged_prs(repo, search, limit)
     if require_issue:
         prs = [pr for pr in prs if linked_issues(pr)]
+    if exclude_issue is not None:
+        prs = [pr for pr in prs if exclude_issue not in {i["number"] for i in linked_issues(pr)}]
     small = [pr for pr in prs if (pr.get("changedFiles") or 0) <= max_files]
+
+    files_by_pr: dict[int, list[dict]] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        files = list(pool.map(lambda pr: pr_files(repo, pr["number"]), small))
-    footprints = [footprint_from_pr(repo, pr, f) for pr, f in zip(small, files, strict=True)]
+        futures = {pool.submit(pr_files, repo, pr["number"]): pr["number"] for pr in small}
+        for done, future in enumerate(as_completed(futures), 1):
+            files_by_pr[futures[future]] = future.result()
+            if on_progress:
+                on_progress(done, len(small))
+    footprints = [footprint_from_pr(repo, pr, files_by_pr[pr["number"]]) for pr in small]
     saved = store.upsert_footprints(footprints) if footprints else 0
+    store.mark_learned(repo, saved)
     return LearnReport(repo=repo, found=len(prs), skipped_large=len(prs) - len(small), saved=saved)
+
+
+def needs_learning(status: dict | None, max_age_days: int) -> bool:
+    """True when the repo has no history in Atlas, or it was learned too long ago."""
+    if not status or not status.get("footprints"):
+        return True
+    learned_at = status.get("last_learned_at")
+    if learned_at is None:
+        return True
+    if learned_at.tzinfo is None:
+        learned_at = learned_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - learned_at > timedelta(days=max_age_days)

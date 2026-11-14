@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 scope-envelope = "scope_envelope.cli:main"
+agent = "scope_envelope.cli:agent_main"
 
 [project.optional-dependencies]
 agent = [

@@ -32,6 +32,17 @@ scope-envelope run https://github.com/owner/repo/issues/123 --condition envelope
 
 Each run works in a fresh copy of the repo, so lazy and envelope start from the same state and your checkout is never touched: a `git worktree` at `--base` (default `HEAD`; use a PR's parent commit to replay an old ticket), or a plain copy for non-git folders. Copies go to `SCOPE_WORKDIR` (default: the system temp folder) and are kept so you can inspect the change. `--in-place` skips the copy. `python -m agent.run` still works and maps the old `raw`/`scoped` names.
 
+## Demo flow: the `agent` command
+
+```bash
+agent https://github.com/owner/repo/issues/123                    # lazy: the agent works with no scope
+agent https://github.com/owner/repo/issues/123 /scopeenvelope     # envelope
+```
+
+On an envelope run, if Atlas has no history for the repo (or it is older than `learn_max_age_days`), the agent learns the repo first: it ingests `learn_limit` ticket-linked PRs, streams progress as `learn` events, waits for Atlas to index them, then starts. It never learns the ticket's own fix: PRs linked to that issue, or merged after it was opened, are skipped, and the scope search filters them out too.
+
+Every `write_file` event in `runs` carries the change (`change`, `lines_added`, `lines_removed`, and a unified `diff`), so a browser can show edits live. All events of one run, including the learning step, share a `run_id`.
+
 ## .scope-envelope.toml
 
 Every key is optional; `init` fills in what it can detect.
@@ -44,6 +55,10 @@ Every key is optional; `init` fills in what it can detect.
 | `approval` | what happens on `request_write`: `auto`, `deny` or `prompt` |
 | `model` | OpenRouter model id (default `deepseek/deepseek-v4-pro`); `MODEL` in the environment overrides it |
 | `max_calls` | tool-call limit per run |
+| `save_unchecked` | with no `test_command`, still save runs as history (marked `verified: false`) |
+| `auto_learn` | envelope runs learn the repo first when Atlas has no recent history (default `true`) |
+| `learn_limit` | ticket-linked PRs to ingest when auto-learning (default 100) |
+| `learn_max_age_days` | refresh history older than this (default 7) |
 
 ## Using the gateway from your own agent
 

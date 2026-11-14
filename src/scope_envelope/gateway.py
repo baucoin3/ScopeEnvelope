@@ -7,6 +7,7 @@ it runs every call and logs it, so the viewer can show both runs side by side.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 import subprocess
@@ -42,6 +43,7 @@ SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
 PATH_EXTENSIONS = (".py", ".go", ".ts", ".js", ".java", ".yaml", ".yml", ".json", ".md", ".toml", ".sql", ".txt", ".tf")
 MAX_READ_CHARS = 60_000
 MAX_GREP_HITS = 100
+MAX_DIFF_CHARS = 20_000
 TEST_TIMEOUT_S = 600
 
 Approver = Callable[[str, str], tuple[bool, str]]
@@ -96,6 +98,22 @@ def _added_lines(old: str | None, new: str) -> list[str]:
     return added
 
 
+def _change(rel: str, old: str | None, new: str) -> dict:
+    """What a write did, for the browser: a unified diff (capped) and line counts."""
+    diff = list(difflib.unified_diff(
+        (old or "").splitlines(keepends=True), new.splitlines(keepends=True), fromfile=f"a/{rel}", tofile=f"b/{rel}"
+    ))
+    added = sum(1 for d in diff if d.startswith("+") and not d.startswith("+++"))
+    removed = sum(1 for d in diff if d.startswith("-") and not d.startswith("---"))
+    text = "".join(diff)
+    return {
+        "change": "created" if old is None else "modified",
+        "lines_added": added,
+        "lines_removed": removed,
+        "diff": text[:MAX_DIFF_CHARS] + ("\n... (diff truncated)" if len(text) > MAX_DIFF_CHARS else ""),
+    }
+
+
 class Gateway:
     def __init__(
         self,
@@ -109,6 +127,8 @@ class Gateway:
         approver: Approver | None = None,
         model: str | None = None,
         before: datetime | None = None,
+        exclude_issue: int | None = None,
+        run_id: str | None = None,
         verbose: bool = True,
     ):
         if mode not in MODES:
@@ -123,12 +143,13 @@ class Gateway:
         self.model = model or self.config.model
         self.repo = self.config.repo
         self.before = before  # replaying an old ticket: only learn from history before it
+        self.exclude_issue = exclude_issue  # the ticket's own issue number: never learn from its own fix
         self.store: Store | None = Store.from_env() if store is _FROM_ENV else store  # type: ignore[assignment]
         self.approver = approver or make_approver(self.config.approval)
         self.verbose = verbose
         self.is_git = (self.repo_root / ".git").exists()
 
-        self.run_id = uuid.uuid4().hex[:12]
+        self.run_id = run_id or uuid.uuid4().hex[:12]
         self.subject = extract_subject(ticket_text, self.config.subject_patterns)
         self.verb = extract_verb(ticket_text)
         self.ticket_paths = extract_paths(ticket_text)
@@ -212,7 +233,10 @@ class Gateway:
             raise RuntimeError("finish() was already called for this run")
         self.finished = True
         total = int(checks.get("total", 0))
-        passed = total > 0 and int(checks.get("passed", 0)) == total
+        verified = total > 0
+        passed = verified and int(checks.get("passed", 0)) == total
+        # With no test command, save_unchecked lets a run still become history (marked unverified).
+        keep = passed or (not verified and self.config.save_unchecked)
 
         changed, added = self._diff()
         footprint = {
@@ -220,13 +244,15 @@ class Gateway:
             "source": "agent_run",
             "repo": self.repo,
             "ticket": self.ticket_id,
+            "issue": self.exclude_issue,
             "text": self.ticket_text,
             "merged_at": datetime.now(UTC),  # same field as mined PRs, so replay cutoffs apply to both
             "verb": self.verb,
             "subject": self.subject,
             "condition": self.mode,
             "model": self.model,
-            "success": passed,
+            "success": keep,
+            "verified": verified,
             "files_read": sorted({normalize(p, self.subject) for p in self.files_read}),
             "files_changed": sorted({normalize(p, self.subject) for p in changed}),
             "added_lines": sorted({normalize(line, self.subject) for line in added}),
@@ -240,11 +266,11 @@ class Gateway:
             "checks": {"passed": int(checks.get("passed", 0)), "total": total},
         }
 
-        saved, why = False, ("checks failed" if total else "no checks ran") if not passed else "no Atlas connection"
-        if passed and self.store:
+        saved, why = False, ("checks failed" if verified else "no checks ran") if not keep else "no Atlas connection"
+        if keep and self.store:
             try:
                 self.store.save_footprint(footprint)
-                saved, why = True, "passed"
+                saved, why = True, "passed" if passed else "saved without checks"
             except Exception as exc:  # telemetry must not break the run
                 why = f"save failed: {type(exc).__name__}"
                 log.warning("could not save footprint for %s: %s", self.ticket_id, exc)
@@ -353,11 +379,13 @@ class Gateway:
             self.blocked += 1  # blocked calls don't count toward the budget
             self._log("write_file", path=rel, decision="blocked", reason=reason)
             return self._block_message(rel)
+        previous = target.read_text(errors="replace") if target.is_file() else None
         if rel not in self.originals:
-            self.originals[rel] = target.read_text(errors="replace") if target.is_file() else None
+            self.originals[rel] = previous
+        content = args.get("content", "")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(args.get("content", ""))
-        return self._counted("write_file", rel, "written", f"Wrote {rel}", reason=reason)
+        target.write_text(content)
+        return self._counted("write_file", rel, "written", f"Wrote {rel}", reason=reason, extra=_change(rel, previous, content))
 
     def _request_write(self, args: dict) -> str:
         _, rel = self._resolve(args.get("path"))
@@ -386,7 +414,10 @@ class Gateway:
         if not self.store:
             return None
         try:
-            return self.store.get_scope(self.ticket_text, self.verb, self.subject, repo=self.repo, before=self.before)
+            return self.store.get_scope(
+                self.ticket_text, self.verb, self.subject,
+                repo=self.repo, before=self.before, exclude_issue=self.exclude_issue,
+            )
         except Exception as exc:  # no Atlas means no scope, not a crashed run
             log.warning("could not fetch scope for %s: %s", self.ticket_id, exc)
             return None
@@ -414,9 +445,11 @@ class Gateway:
             )
         return f"Blocked: there is no learned scope for this ticket yet. Call request_write(path='{rel}', reason=...) first."
 
-    def _counted(self, tool: str, path: str | None, decision: str, result: str, reason: str = "") -> str:
+    def _counted(
+        self, tool: str, path: str | None, decision: str, result: str, reason: str = "", extra: dict | None = None
+    ) -> str:
         self.calls += 1
-        self._log(tool, path=path, decision=decision, reason=reason)
+        self._log(tool, path=path, decision=decision, reason=reason, extra=extra)
         budget = self.scope.call_budget if (self.enforcing and self.scope and self.scope.usable) else None
         if budget and self.calls >= budget:
             result += f"\n[gateway] {self.calls} of about {budget} expected tool calls used. Finish the remaining work and stop."

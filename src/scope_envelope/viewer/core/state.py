@@ -15,7 +15,7 @@ DONE = "done"
 
 _LOG_CAPACITY = 200
 # Events that describe the run itself rather than a tool call.
-_RUN_EVENTS = {"scope", "llm", "checks", "finish"}
+_RUN_EVENTS = {"learn", "scope", "llm", "checks", "finish"}
 
 
 @dataclass
@@ -86,7 +86,17 @@ def apply_run_event(state: RunState, doc: dict) -> None:
 
 
 def _apply_run_level(state: RunState, tool: str, doc: dict) -> None:
-    if tool == "scope":
+    if tool == "learn":
+        decision = doc.get("decision")
+        if decision == "start":
+            state.log.append(f"no recent history for {doc.get('repo')}: learning it first")
+        elif decision == "progress":
+            state.log.append(f"learning: {doc.get('done')}/{doc.get('total')} tickets")
+        elif decision == "done":
+            state.log.append(f"learned {doc.get('saved')} tickets into Atlas")
+        elif decision == "fresh":
+            state.log.append(f"history is recent ({doc.get('footprints')} tickets in Atlas)")
+    elif tool == "scope":
         scope = doc.get("scope") or {}
         if scope:
             state.log.append(f"scope: {scope.get('confidence')} match, learned from {', '.join(scope.get('based_on') or [])}")

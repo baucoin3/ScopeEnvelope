@@ -45,6 +45,7 @@ def index_definition() -> dict:
             {"type": "filter", "path": "success"},
             {"type": "filter", "path": "repo"},
             {"type": "filter", "path": "merged_at"},
+            {"type": "filter", "path": "issue"},
         ]
     }
 
@@ -61,18 +62,25 @@ def _vote(field: str) -> list[dict]:
 
 
 def scope_pipeline(
-    ticket_text: str, verb: str, repo: str | None = None, before: datetime | None = None
+    ticket_text: str,
+    verb: str,
+    repo: str | None = None,
+    before: datetime | None = None,
+    exclude_issue: int | None = None,
 ) -> list[dict]:
     """Similar successful tickets -> cheapest half -> majority vote with provenance.
 
     `repo` keeps one codebase's history from leaking into another's scope.
     `before` replays a past ticket using only history that existed at the time.
+    `exclude_issue` drops history tied to the ticket being worked on, so it never learns its own fix.
     """
     query_filter: dict = {"verb": verb, "success": True}
     if repo:
         query_filter["repo"] = repo
     if before:
         query_filter["merged_at"] = {"$lt": before}
+    if exclude_issue is not None:
+        query_filter["issue"] = {"$ne": exclude_issue}
     return [
         {
             "$vectorSearch": {
@@ -182,9 +190,24 @@ class Store:
         subject: str | None,
         repo: str | None = None,
         before: datetime | None = None,
+        exclude_issue: int | None = None,
     ) -> Scope:
-        docs = list(self.footprints.aggregate(scope_pipeline(ticket_text, verb, repo, before)))
+        docs = list(self.footprints.aggregate(scope_pipeline(ticket_text, verb, repo, before, exclude_issue)))
         return scope_from_facets(docs[0] if docs else None, subject)
+
+    # --- repo history ----------------------------------------------------------
+
+    def repo_status(self, repo: str) -> dict | None:
+        """When this repo's history was last learned, and how many footprints it has."""
+        status = self.db["repos"].find_one({"_id": repo})
+        if status is not None:
+            status["footprints"] = self.footprints.count_documents({"repo": repo, "success": True})
+        return status
+
+    def mark_learned(self, repo: str, saved: int) -> None:
+        self.db["repos"].update_one(
+            {"_id": repo}, {"$set": {"last_learned_at": datetime.now(UTC), "last_saved": saved}}, upsert=True
+        )
 
     # --- writes --------------------------------------------------------------
 

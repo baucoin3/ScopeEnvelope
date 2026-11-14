@@ -12,7 +12,7 @@ class FakeStore:
         self.footprints = []
         self.events = []
 
-    def get_scope(self, ticket_text, verb, subject, repo=None, before=None):
+    def get_scope(self, ticket_text, verb, subject, repo=None, before=None, **kwargs):
         if self.scope is not None:
             self.scope.subject = subject
         return self.scope

@@ -15,7 +15,7 @@ class ListStore:
     def __init__(self, scope=None):
         self.scope, self.events = scope, []
 
-    def get_scope(self, ticket_text, verb, subject, repo=None, before=None):
+    def get_scope(self, ticket_text, verb, subject, repo=None, before=None, **kwargs):
         if self.scope:
             self.scope.subject = subject
         return self.scope
@@ -90,5 +90,6 @@ def test_ticket_refs():
 
 
 def test_plain_text_ticket_needs_no_network():
-    ticket_id, text = fetch_ticket("  Fix the login bug  ")
-    assert ticket_id.startswith("ticket-") and text == "Fix the login bug"
+    ticket = fetch_ticket("  Fix the login bug  ")
+    assert ticket.id.startswith("ticket-") and ticket.text == "Fix the login bug"
+    assert ticket.number is None and ticket.created_at is None

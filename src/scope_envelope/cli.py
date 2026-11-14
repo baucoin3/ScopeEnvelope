@@ -119,6 +119,29 @@ def cmd_mock(args: argparse.Namespace) -> None:
     print(json.dumps(run(args.ticket, args.condition, args.delay), indent=2, default=str))
 
 
+ENVELOPE_FLAGS = ("/scopeenvelope", "/scope-envelope", "/enableScopeEnvelope", "--envelope")
+
+
+def agent_main(argv: list[str] | None = None) -> None:
+    """The short demo command:
+
+        agent <ticket link>                      # lazy: no scope
+        agent <ticket link> /scopeenvelope       # envelope: learns the repo first if needed
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    envelope = any(a in ENVELOPE_FLAGS for a in argv)
+    parser = argparse.ArgumentParser(prog="agent", description=agent_main.__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("ticket", nargs="?", help="GitHub issue link, owner/repo#123, or ticket text")
+    parser.add_argument("--repo-root", default=".", help="the repo to work in (default: current directory)")
+    parser.add_argument("--model", help="OpenRouter model id")
+    parser.add_argument("--base", default="HEAD", help="git commit the fresh workspace starts from")
+    parser.add_argument("--in-place", action="store_true", help="work directly in the repo instead of a fresh copy")
+    args = parser.parse_args([a for a in argv if a not in ENVELOPE_FLAGS])
+    args.condition, args.before = ("envelope" if envelope else "lazy"), None
+    cmd_run(args)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="scope-envelope", description="Learned scopes for coding agents.")
     parser.add_argument("--repo-root", default=".", help="the repo to work in (default: current directory)")
