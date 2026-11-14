@@ -42,6 +42,10 @@ class ConditionGraph {
       })
       .cooldownTicks(Infinity);
     this.graph.graphData({ nodes: [], links: [] });
+    // Pin a fixed, zoomed-out starting scale instead of fitting to content --
+    // fitting to content looks fine once there are a couple dozen nodes, but
+    // is way too tight with only the 1-2 nodes present early in a run.
+    this.graph.zoom(0.9, 0);
 
     window.addEventListener("resize", () => {
       this.graph.width(this.containerEl.clientWidth).height(this.containerEl.clientHeight);
@@ -100,12 +104,6 @@ class ConditionGraph {
       nodes: Array.from(this.nodes.values()),
       links: this.links.slice(),
     });
-    // force-graph doesn't auto-fit the camera to the simulation -- without
-    // this, repulsion between a handful of sparsely-connected nodes can
-    // drift them past the visible canvas edge long before the layout
-    // settles, especially early on when there are few links to hold
-    // things together.
-    this.graph.zoomToFit(400, 30);
   }
 
   handleEvent(evt) {

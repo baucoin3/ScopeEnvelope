@@ -1,7 +1,8 @@
 """Single-command orchestrator for the ScopeEnvelope web viewer
 (visualization-plan.md §5): starts webviz.server:app in-process, waits until
 it's accepting connections AND its Bridge/Change-Stream watchers are up
-(via /health), opens a browser tab, kicks off the real agent runs (lazy
+(by polling webviz.server's module-level state directly, in-process), opens
+a browser tab, kicks off the real agent runs (lazy
 then envelope) off the main thread so the server loop keeps serving SSE
 while the agent makes LLM calls, then stays alive after both finish
 (Ctrl+C to exit) -- the finished page persists.
@@ -11,8 +12,6 @@ while the agent makes LLM calls, then stays alive after both finish
 """
 
 import asyncio
-import http.client
-import json
 import os
 import socket
 import sys
@@ -22,6 +21,7 @@ import webbrowser
 import uvicorn
 
 from agent import run_ticket
+from webviz import server as webviz_server
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -38,20 +38,8 @@ async def _wait_for_server(host: str, port: int) -> None:
         await asyncio.sleep(0.05)
 
 
-def _bridge_ready(host: str, port: int) -> bool:
-    conn = http.client.HTTPConnection(host, port, timeout=0.5)
-    try:
-        conn.request("GET", "/health")
-        data = json.loads(conn.getresponse().read())
-        return bool(data.get("ready"))
-    except OSError:
-        return False
-    finally:
-        conn.close()
-
-
-async def _wait_for_bridge(host: str, port: int) -> None:
-    while not _bridge_ready(host, port):
+async def _wait_for_bridge() -> None:
+    while webviz_server._bridge is None:
         await asyncio.sleep(0.05)
 
 
@@ -69,7 +57,7 @@ async def main() -> None:
 
     server_task = asyncio.create_task(server.serve())
     await _wait_for_server(HOST, PORT)
-    await _wait_for_bridge(HOST, PORT)
+    await _wait_for_bridge()
     webbrowser.open(f"http://{HOST}:{PORT}/")
 
     threading.Thread(target=_drive_runs, args=(ticket,), daemon=True).start()
