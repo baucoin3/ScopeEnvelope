@@ -165,3 +165,37 @@ def test_env_found_from_a_sibling_repo(tmp_path, monkeypatch):
     files = env_files()
     assert files[0] == tmp_path / "home" / ".config" / "scope-envelope" / ".env"
     assert all(f.name == ".env" for f in files)
+
+
+def test_atlas_writes_do_not_block_and_flush_on_finish():
+    import time as _time
+
+    from scope_envelope.store import Store
+
+    class SlowRuns:
+        def __init__(self):
+            self.docs = []
+
+        def insert_one(self, doc):
+            _time.sleep(0.05)  # a slow network write
+            self.docs.append(doc)
+
+    store = Store.__new__(Store)
+    store.runs, store._writer = SlowRuns(), None
+    t = _time.perf_counter()
+    for i in range(10):
+        store.log({"i": i})
+    assert _time.perf_counter() - t < 0.05  # queued, not written inline (10 x 50ms would be 0.5s)
+    store.flush()
+    assert [d["i"] for d in store.runs.docs] == list(range(10))  # all written, in order
+
+
+def test_provider_pinning_settings(tmp_path, monkeypatch):
+    from scope_envelope.agent import build_model
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    llm = build_model("deepseek/deepseek-v4.1-flash-1017", provider="deepinfra", seed=7)
+    assert llm.extra_body["provider"] == {"order": ["deepinfra"], "allow_fallbacks": True}
+    assert llm.seed == 7 and llm.extra_body["reasoning"] == {"enabled": False}
+    monkeypatch.setenv("SCOPE_PROVIDER", "")
+    assert load_config(tmp_path).provider == ""

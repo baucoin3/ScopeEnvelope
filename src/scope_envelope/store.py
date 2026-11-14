@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
+import logging
 import os
+import queue
+import threading
 import time
 from datetime import UTC, datetime
 
@@ -136,6 +140,7 @@ class Store:
         self.db = client[db_name]
         self.footprints = self.db[footprints]
         self.runs = self.db[runs]
+        self._writer: threading.Thread | None = None
 
     @classmethod
     def from_env(cls) -> Store | None:
@@ -226,4 +231,28 @@ class Store:
         return len(footprints)
 
     def log(self, event: dict) -> None:
-        self.runs.insert_one(dict(event))
+        """Queue an event for Atlas and return immediately: the agent never waits on a network write."""
+        if self._writer is None:
+            self._queue: "queue.Queue[dict]" = queue.Queue()
+            self._writer = threading.Thread(target=self._write_loop, daemon=True)
+            self._writer.start()
+            atexit.register(self.flush)
+        self._queue.put(dict(event))
+
+    def _write_loop(self) -> None:
+        while True:
+            event = self._queue.get()
+            try:
+                self.runs.insert_one(event)
+            except Exception as exc:  # telemetry must never break a run
+                logging.getLogger("scope_envelope").warning("could not write event to Atlas: %s", exc)
+            finally:
+                self._queue.task_done()
+
+    def flush(self, timeout_s: float = 30) -> None:
+        """Wait (up to timeout_s) until queued events are in Atlas."""
+        if self._writer is None:
+            return
+        deadline = time.monotonic() + timeout_s
+        while self._queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.05)

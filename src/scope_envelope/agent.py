@@ -112,7 +112,7 @@ class UsageReporter(BaseCallbackHandler):
         self._check_budget()
 
 
-def build_model(model: str, reasoning: bool = False) -> ChatOpenAI:
+def build_model(model: str, reasoning: bool = False, provider: str = "", seed: int | None = None) -> ChatOpenAI:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("OPENROUTER_API_KEY is not set. Add it to .env (see .env.example).")
@@ -124,7 +124,14 @@ def build_model(model: str, reasoning: bool = False) -> ChatOpenAI:
         base_url=OPENROUTER_URL,
         temperature=0,
         # reasoning off: no "thinking" tokens before each reply, about twice as fast per call.
-        extra_body={"usage": {"include": True}, "reasoning": {"enabled": reasoning}},
+        seed=seed,
+        extra_body={
+            "usage": {"include": True},
+            "reasoning": {"enabled": reasoning},
+            # OpenRouter spreads a model across many providers (different hardware and precision),
+            # which changes both speed and answers. Prefer one; fall back only if it's down.
+            **({"provider": {"order": [provider], "allow_fallbacks": True}} if provider else {}),
+        },
     )
 
 
@@ -235,7 +242,7 @@ def run_ticket(
     """
     load_env()
     config = load_config(repo_root)
-    llm = build_model(model or config.model, config.reasoning)  # fail on a missing API key before anything is logged
+    llm = build_model(model or config.model, config.reasoning, config.provider, config.seed)  # fail on a missing API key before anything is logged
     t = fetch_ticket(ticket)
     store = Store.from_env()
     run_id = run_id or uuid.uuid4().hex[:12]

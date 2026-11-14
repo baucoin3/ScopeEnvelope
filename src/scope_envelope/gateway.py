@@ -304,6 +304,8 @@ class Gateway:
             "history_for_next": (self.scope.matched if self.scope else 0) + (1 if saved else 0),
         }
         self._log("finish", decision="finish", extra={"summary": summary})
+        if self.store and hasattr(self.store, "flush"):
+            self.store.flush()  # make sure the whole run is in Atlas before returning
         return summary
 
     # --- tools -----------------------------------------------------------------------

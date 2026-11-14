@@ -48,6 +48,8 @@ class Config:
     max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS  # hard stop: total prompt tokens per run
     max_seconds: int = 0  # hard stop: wall-clock seconds per run (0 = no limit); SCOPE_MAX_SECONDS overrides
     reasoning: bool = False  # let the model 'think' before answering: better on hard tickets, much slower
+    provider: str = "deepinfra"  # OpenRouter provider to pin, so every call runs on the same hardware ("" = any)
+    seed: int = 7  # fixed sampling seed, for repeatable runs where the provider supports it
 
     @property
     def test_argv(self) -> list[str] | None:
@@ -57,7 +59,7 @@ class Config:
 KEYS = (
     "repo", "test_command", "subject_patterns", "approval", "model", "max_calls",
     "save_unchecked", "auto_learn", "learn_limit", "learn_max_age_days", "max_prompt_tokens",
-    "max_seconds", "reasoning",
+    "max_seconds", "reasoning", "provider", "seed",
 )
 
 
@@ -107,6 +109,8 @@ def load_config(root: str | Path) -> Config:
     config.approval = os.environ.get("SCOPE_APPROVAL", config.approval)
     if os.environ.get("SCOPE_MAX_SECONDS"):
         config.max_seconds = int(os.environ["SCOPE_MAX_SECONDS"])
+    if "SCOPE_PROVIDER" in os.environ:
+        config.provider = os.environ["SCOPE_PROVIDER"]
     if os.environ.get("SCOPE_REASONING"):
         config.reasoning = os.environ["SCOPE_REASONING"].lower() in ("1", "on", "true", "yes")
     return config
