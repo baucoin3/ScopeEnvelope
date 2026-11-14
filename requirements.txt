@@ -4,3 +4,5 @@ python-dotenv
 pytest
 pymongo
 rich
+fastapi
+uvicorn
