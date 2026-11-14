@@ -4,7 +4,7 @@
 
 - **Branch:** feat/gateway-core
 - **Last updated:** 2026-11-14
-- **Summary:** 16 files (3 new, 13 modified)
+- **Summary:** 7 files (2 new, 5 modified)
 
 ## What to do next
 
@@ -48,5 +48,18 @@
   - src/scope_envelope/tickets.py
   - src/scope_envelope/viewer/core/state.py
   - ... (+3 more)
+
+
+### 2026-11-14T20:17:01Z
+- 7 files (2 new, 5 modified)
+  New:
+  - rfc.md
+  - sample.png
+  Modified:
+  - src/scope_envelope/agent.py
+  - src/scope_envelope/config.py
+  - src/scope_envelope/store.py
+  - tests/test_demo_flow.py
+  - tests/test_portability.py
 
 ## Past Sessions
