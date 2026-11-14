@@ -20,8 +20,8 @@ import webbrowser
 
 import uvicorn
 
-from agent import run_ticket
-from webviz import server as webviz_server
+from scope_envelope.agent import run_ticket
+from scope_envelope.webviz import server as webviz_server
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -44,15 +44,15 @@ async def _wait_for_bridge() -> None:
 
 
 def _drive_runs(ticket: str) -> None:
-    run_ticket(ticket, "lazy")
-    run_ticket(ticket, "envelope")
+    run_ticket(ticket, condition="lazy")
+    run_ticket(ticket, condition="envelope")
 
 
 async def main() -> None:
     ticket = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TICKET
     os.environ["WEBVIZ_TICKET"] = ticket
 
-    config = uvicorn.Config("webviz.server:app", host=HOST, port=PORT, log_level="info")
+    config = uvicorn.Config("scope_envelope.webviz.server:app", host=HOST, port=PORT, log_level="info")
     server = uvicorn.Server(config)
 
     server_task = asyncio.create_task(server.serve())

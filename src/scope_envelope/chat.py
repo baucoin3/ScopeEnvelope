@@ -91,7 +91,14 @@ def main() -> None:
     console = Console()
     config = load_config(".")
     model = os.environ.get("MODEL", config.model)
-    ui_url = os.environ.get("SCOPE_UI_URL", "")  # e.g. http://localhost:8000/?run={run_id}
+    ui_url = os.environ.get("SCOPE_UI_URL", "")
+    if not ui_url and os.environ.get("WEBVIZ", "1") != "0":
+        try:  # start the live browser view alongside the session
+            from .webviz.server import serve_in_background
+
+            ui_url = serve_in_background(os.environ.get("WEBVIZ_HOST", "127.0.0.1"), int(os.environ.get("WEBVIZ_PORT", "8765")))
+        except Exception as exc:  # the terminal session still works without the browser view
+            console.print(f"[yellow]Live browser view not started: {exc}[/]")
     gateway_on = False
     last: dict[str, dict] = {}  # ticket id -> last summary, for the comparison line
 
@@ -105,6 +112,8 @@ def main() -> None:
         console.rule(f"scope-agent · {config.repo or 'local repo'} · {model} · ScopeEnvelope gateway: {state}")
 
     header()
+    if ui_url:
+        console.print(f"[bold]Live view:[/] {ui_url}")
     console.print("Hi! How can I help you today? [dim](paste a ticket link, or type /help)[/]")
     while True:
         try:
@@ -133,7 +142,7 @@ def _run(console: Console, link: str, instructions: str, gateway_on: bool, ui_ur
 
     condition = "envelope" if gateway_on else "lazy"
     run_id = uuid.uuid4().hex[:12]
-    live = ui_url.format(run_id=run_id) if ui_url else f"run_id {run_id}"
+    live = ui_url.replace("{run_id}", run_id) if ui_url else f"run_id {run_id}"
     console.print(f"Working on {link} ({'ScopeEnvelope gateway' if gateway_on else 'no gateway'})")
     console.print(f"[bold]Live view:[/] {live}")
 

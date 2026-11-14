@@ -4,7 +4,7 @@ MockSource is kept below, commented out, for visual tuning without real
 data -- see the toggle comment in _startup()) is the only thing that
 changes when this swaps -- no other code here changes.
 
-    uvicorn webviz.server:app
+    uvicorn scope_envelope.webviz.server:app
 """
 
 import asyncio
@@ -16,10 +16,9 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-# from viewer import config
-# from viewer.mongo_source import MongoSource
-from webviz.bridge import Bridge
-from webviz.mock_source import MockSource
+from .bridge import Bridge
+from .live_source import LiveSource
+from .mock_source import MockSource
 
 STATIC_DIR = Path(__file__).parent / "static"
 TICKET = os.environ.get("WEBVIZ_TICKET", "PIPE-2031: Implement Kafka consumer")
@@ -32,30 +31,24 @@ _bridge: Bridge | None = None
 async def _startup() -> None:
     global _bridge
     loop = asyncio.get_running_loop()
-
-    # --- Real Mongo wiring (Milestone 5) -----------------------------------
-    # MongoSource is scoped to one ticket+condition's Change Stream, so the
-    # real wiring needs two instances (lazy, envelope) merged into Bridge's
-    # shared queue -- unlike MockSource, which self-plays both from one.
-    # To switch back to real Mongo: comment out the "Mock wiring" block
-    # below, uncomment the `viewer.config`/`MongoSource` imports at the top
-    # of this file and the block below.
-    #
-    # sources = [
-    #     MongoSource(config.MONGODB_URI, config.DB_NAME, config.RUNS_COLLECTION,
-    #                 config.FOOTPRINTS_COLLECTION, TICKET, "lazy"),
-    #     MongoSource(config.MONGODB_URI, config.DB_NAME, config.RUNS_COLLECTION,
-    #                 config.FOOTPRINTS_COLLECTION, TICKET, "envelope"),
-    # ]
-    # _bridge = Bridge(sources, ticket=TICKET, loop=loop)
-    # _bridge.start()
-    # ------------------------------------------------------------------------
-
-    # --- Mock wiring (for tuning visuals without real data) -----------------
-    source = MockSource(ticket=TICKET)
+    # Live Atlas Change Stream by default; WEBVIZ_MOCK=1 replays the scripted mock for tuning visuals.
+    if os.environ.get("WEBVIZ_MOCK") == "1":
+        source = MockSource(ticket=TICKET)
+    else:
+        source = LiveSource()
     _bridge = Bridge([source], ticket=TICKET, loop=loop)
     _bridge.start()
-    # ------------------------------------------------------------------------
+
+
+def serve_in_background(host: str = "127.0.0.1", port: int = 8765) -> str:
+    """Start the web viewer in a daemon thread (used by scope-agent). Returns its URL."""
+    import threading
+
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    return f"http://{host}:{port}/"
 
 
 @app.get("/health")

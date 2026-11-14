@@ -230,10 +230,24 @@ class Dashboard {
       evt.cost_usd_cum != null ? `$${evt.cost_usd_cum.toFixed(5)}` : "--";
   }
 
+  _resetCondition(condition) {
+    const el = document.getElementById(`graph-${condition}`);
+    el.innerHTML = "";
+    this.graphs[condition] = new ConditionGraph(condition, el);
+    this.trendData[condition] = [];
+    const ds = this.chart.data.datasets.find((d) => d.label === condition);
+    ds.data = [];
+    this.chart.update();
+    const statusEl = document.getElementById(`status-${condition}`);
+    statusEl.textContent = "running";
+    statusEl.classList.remove("done");
+  }
+
   handleMessage(evt) {
     const { condition } = evt;
+    if (!this.graphs[condition]) return;
+    if (evt.type === "start") this._resetCondition(condition); // a new run of this condition
     const graph = this.graphs[condition];
-    if (!graph) return;
 
     graph.handleEvent(evt);
     this._updateCounters(condition, evt);

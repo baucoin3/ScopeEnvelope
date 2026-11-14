@@ -23,7 +23,9 @@ agent = [
     "langchain-openai>=1.8.0",
 ]
 viewer = [
+    "fastapi>=0.163.0",
     "rich>=15.0.0",
+    "uvicorn>=0.54.0",
 ]
 
 [build-system]

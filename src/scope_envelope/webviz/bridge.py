@@ -23,7 +23,7 @@ limitation for a hackathon demo (visualization-plan.md §3), not a bug.
 import asyncio
 import threading
 
-from webviz.events import ConditionNormalizer, WireEvent
+from .events import ConditionNormalizer, WireEvent
 
 
 class Bridge:
@@ -32,9 +32,14 @@ class Bridge:
         self._ticket = ticket
         self._loop = loop
         self._normalizers: dict[str, ConditionNormalizer] = {}
+        self._run_ids: dict[str, str | None] = {}
         self.queue: "asyncio.Queue[WireEvent]" = asyncio.Queue()
 
-    def _normalizer_for(self, condition: str) -> ConditionNormalizer:
+    def _normalizer_for(self, condition: str, run_id: str | None = None) -> ConditionNormalizer:
+        # A new run of the same condition starts from a clean slate (the browser resets that panel).
+        if condition in self._normalizers and run_id and self._run_ids.get(condition) != run_id:
+            del self._normalizers[condition]
+        self._run_ids[condition] = run_id or self._run_ids.get(condition)
         if condition not in self._normalizers:
             self._normalizers[condition] = ConditionNormalizer(self._ticket, condition)
         return self._normalizers[condition]
@@ -42,7 +47,9 @@ class Bridge:
     def _drain(self, source) -> None:
         source.start()
         for event_type, doc in source.events():
-            normalizer = self._normalizer_for(doc["condition"])
+            if not doc.get("condition"):
+                continue
+            normalizer = self._normalizer_for(doc["condition"], doc.get("run_id"))
             wire_event = normalizer.normalize(event_type, doc)
             self._loop.call_soon_threadsafe(self.queue.put_nowait, wire_event)
 
