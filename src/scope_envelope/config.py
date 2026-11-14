@@ -130,3 +130,33 @@ def write_config(config: Config) -> Path:
     path = config.root / CONFIG_FILE
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def env_files() -> list[Path]:
+    """Where settings (.env) are looked for, in order. Earlier files win; real env vars beat all.
+
+    1. a .env in the current folder or any folder above it (per-project override)
+    2. ~/.config/scope-envelope/.env (per-user, works from any repo)
+    3. the ScopeEnvelope checkout's own .env (when installed with --editable)
+    """
+    from dotenv import find_dotenv
+
+    candidates = [
+        find_dotenv(usecwd=True),
+        Path.home() / ".config" / "scope-envelope" / ".env",
+        Path(__file__).resolve().parents[2] / ".env",
+    ]
+    seen, found = set(), []
+    for c in candidates:
+        path = Path(c) if c else None
+        if path and path.is_file() and path.resolve() not in seen:
+            seen.add(path.resolve())
+            found.append(path)
+    return found
+
+
+def load_env() -> None:
+    from dotenv import load_dotenv
+
+    for path in env_files():
+        load_dotenv(path, override=False)

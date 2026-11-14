@@ -10,20 +10,20 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from langchain_openai import ChatOpenAI
 
 from . import workspace
-from .config import Config, load_config
+from .config import Config, load_config, load_env
 from .gateway import Gateway, extract_verb
 from .store import Store
 from .tickets import Ticket, fetch_ticket
@@ -100,15 +100,24 @@ def _event(store: Store | None, run_id: str, ticket: Ticket, condition: str, rep
         return
     try:
         store.log({
-            "run_id": run_id, "ticket": ticket.id, "repo": repo, "condition": condition,
-            "tool": "learn", "ts": datetime.now(UTC), **fields,
+            "run_id": run_id, "ticket": ticket.id, "repo": repo, "condition": condition, "model": None,
+            "step": 0, "tool": "learn", "path": None, "reason": "", "scope_based_on": [], "scope_files": [],
+            # Same shape as gateway events, so a consumer can read `totals` from every event.
+            "totals": {"calls": 0, "blocked": 0, "files_read": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
+            "ts": datetime.now(UTC), **fields,
         })
     except Exception as exc:  # telemetry must not stop the run
         log.warning("could not log learn event: %s", exc)
 
 
-def auto_learn(store: Store, config: Config, ticket: Ticket, condition: str, run_id: str) -> dict:
-    """Learn the repo first when Atlas has no recent history for it. Returns what happened."""
+def auto_learn(
+    store: Store, config: Config, ticket: Ticket, condition: str, run_id: str, cutoff: datetime | None = None
+) -> dict:
+    """Learn the repo first when Atlas has no recent history for it. Returns what happened.
+
+    `cutoff` is the date of the commit the agent starts from: only PRs merged before it are
+    learned, so history never includes work that wasn't in the code yet (including this ticket's fix).
+    """
     from .mine import learn, needs_learning
 
     repo = config.repo
@@ -129,7 +138,7 @@ def auto_learn(store: Store, config: Config, ticket: Ticket, condition: str, run
 
     report = learn(
         repo, store, limit=config.learn_limit, exclude_issue=own_ticket,
-        before=ticket.created_at if own_ticket else None, on_progress=progress,
+        before=cutoff, on_progress=progress,
     )
     _event(store, run_id, ticket, condition, repo, decision="done", saved=report.saved)
     print(f"[scope] saved {report.saved} footprints; waiting for Atlas to index them ...", file=sys.stderr)
@@ -149,6 +158,16 @@ def _searchable(store: Store, ticket: Ticket, repo: str, own_ticket: int | None)
         return False
 
 
+def commit_date(repo_root: str, ref: str) -> datetime | None:
+    """When `ref` was committed, or None outside a git repo. HEAD on an up-to-date repo means 'now'."""
+    out = subprocess.run(
+        ["git", "-C", str(repo_root), "log", "-1", "--format=%cI", ref], capture_output=True, text=True, timeout=30
+    )
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    return datetime.fromisoformat(out.stdout.strip())
+
+
 def run_ticket(
     ticket: str,
     *,
@@ -166,7 +185,7 @@ def run_ticket(
     lazy and envelope runs start from the same state and your checkout is never touched.
     Envelope runs learn the repo's history first when Atlas has none (or it is stale).
     """
-    load_dotenv(find_dotenv(usecwd=True))
+    load_env()
     config = load_config(repo_root)
     llm = build_model(model or config.model)  # fail on a missing API key before anything is logged
     t = fetch_ticket(ticket)
@@ -175,7 +194,7 @@ def run_ticket(
 
     learned = None
     if condition == "envelope" and store and config.repo and config.auto_learn:
-        learned = auto_learn(store, config, t, condition, run_id)
+        learned = auto_learn(store, config, t, condition, run_id, cutoff=commit_date(repo_root, base))
 
     work_root = Path(repo_root).resolve() if in_place else workspace.prepare(repo_root, t.id, condition, base)
     gw = Gateway(

@@ -104,11 +104,15 @@ def test_auto_learn_learns_first_when_atlas_has_nothing(monkeypatch):
 
     monkeypatch.setattr(mine, "learn", fake_learn)
     store = Store(status=None)
-    result = agent_mod.auto_learn(store, Config(root=".", repo="acme/app", learn_limit=100), TICKET, "envelope", "run1")
+    base_date = datetime(2026, 10, 9, tzinfo=UTC)
+    result = agent_mod.auto_learn(
+        store, Config(root=".", repo="acme/app", learn_limit=100), TICKET, "envelope", "run1", cutoff=base_date
+    )
     assert result == {"learned": True, "saved": 10}
-    assert calls["exclude_issue"] == 42 and calls["before"] == TICKET.created_at and calls["limit"] == 100
+    assert calls["exclude_issue"] == 42 and calls["before"] == base_date and calls["limit"] == 100
     assert [e["decision"] for e in store.events] == ["start", "progress", "done"]
     assert all(e["run_id"] == "run1" and e["tool"] == "learn" for e in store.events)
+    assert all(e["totals"]["calls"] == 0 and "scope_files" in e for e in store.events)  # same shape as gateway events
 
 
 def test_scope_search_excludes_the_tickets_own_issue():
@@ -170,3 +174,13 @@ def test_agent_command(monkeypatch, argv, condition):
     monkeypatch.setattr(cli, "cmd_run", lambda args: got.update(vars(args)))
     cli.agent_main(argv)
     assert got["condition"] == condition and got["ticket"] in ("https://github.com/acme/app/issues/42", "acme/app#42")
+
+
+def test_commit_date_is_the_learning_cutoff(tmp_path):
+    import subprocess
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.email=t@example.com", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "x", "--date", "2026-10-09T14:00:00Z"],
+                   check=True, env={"GIT_COMMITTER_DATE": "2026-10-09T14:00:00Z", "PATH": "/usr/bin:/bin"})
+    assert agent_mod.commit_date(str(tmp_path), "HEAD").isoformat().startswith("2026-10-09T14:00:00")
+    assert agent_mod.commit_date(str(tmp_path / "missing"), "HEAD") is None

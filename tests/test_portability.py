@@ -151,3 +151,17 @@ def test_no_config_file_means_no_checks_but_repo_is_still_detected(git_repo):
     config = load_config(git_repo)  # go.mod present, but no .scope-envelope.toml
     assert config.repo == "acme/widgets"
     assert config.test_command is None
+
+
+def test_env_found_from_a_sibling_repo(tmp_path, monkeypatch):
+    from scope_envelope.config import env_files
+
+    other = tmp_path / "terraform-provider-aws"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home" / ".config" / "scope-envelope").mkdir(parents=True)
+    (tmp_path / "home" / ".config" / "scope-envelope" / ".env").write_text("X=1\n")
+    files = env_files()
+    assert files[0] == tmp_path / "home" / ".config" / "scope-envelope" / ".env"
+    assert all(f.name == ".env" for f in files)

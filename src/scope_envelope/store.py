@@ -6,10 +6,10 @@ import os
 import time
 from datetime import UTC, datetime
 
-from dotenv import find_dotenv, load_dotenv
 from pymongo import ASCENDING, MongoClient
 from pymongo.operations import SearchIndexModel
 
+from .config import load_env
 from .scope import WEAK_SCORE, Scope, scope_from_facets
 
 INDEX_NAME = "ticket_idx"
@@ -20,7 +20,7 @@ NEIGHBOURS = 6
 
 def mongo_settings() -> dict:
     """Connection and collection names, from the environment or the nearest .env."""
-    load_dotenv(find_dotenv(usecwd=True))
+    load_env()
     return {
         "uri": os.environ.get("MONGODB_URI", ""),
         "db": os.environ.get("MONGODB_DB", "scopeenvelope"),
