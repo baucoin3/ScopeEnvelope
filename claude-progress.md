@@ -4,7 +4,7 @@
 
 - **Branch:** visual-v2
 - **Last updated:** 2026-11-14
-- **Summary:** 10 files (3 new, 7 modified)
+- **Summary:** 7 files (3 new, 4 modified)
 
 ## What to do next
 
@@ -111,5 +111,18 @@
   - src/scope_envelope/tools.py
   - tests/test_demo_flow.py
   - tests/test_gateway.py
+
+
+### 2026-11-14T21:31:47Z
+- 7 files (3 new, 4 modified)
+  New:
+  - .claude
+  - rfc.md
+  - sample.png
+  Modified:
+  - src/scope_envelope/agent.py
+  - src/scope_envelope/chat.py
+  - src/scope_envelope/config.py
+  - tests/test_demo_flow.py
 
 ## Past Sessions
