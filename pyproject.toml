@@ -1,0 +1,22 @@
+[project]
+name = "scope-envelope"
+version = "0.1.0"
+description = "Gateway that learns each ticket type's footprint from past work and scopes coding agents to it"
+authors = [
+    { name = "Rami Radaideh" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "langchain-core>=1.8.0",
+    "pymongo>=4.20.0",
+    "python-dotenv>=1.2.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
