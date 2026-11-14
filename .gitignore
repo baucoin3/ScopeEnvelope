@@ -1,5 +1,11 @@
 .env
-runs.jsonl
+.env.*
+!.env.example
+.idea/
+.venv/
+venv/
 __pycache__/
 *.pyc
-.venv/
+.pytest_cache/
+runs.jsonl
+work/

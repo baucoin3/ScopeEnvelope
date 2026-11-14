@@ -15,10 +15,12 @@ from rich.text import Text
 
 from . import state as state_mod
 
+_UNTOUCHED = "untouched"
 _STYLE = {
     state_mod.READ: "bold white on blue3",
     state_mod.WRITTEN: "bold white on green4",
     state_mod.BLOCKED: "bold white on red3",
+    _UNTOUCHED: "grey62 on grey19",
 }
 
 _COLUMNS = 4
@@ -30,19 +32,20 @@ def _tile_text(path: str, status: str, in_scope: bool) -> Text:
 
 
 def _build_tile_grid(state: state_mod.RunState):
-    # Tiles only exist once a tool call touches that path -- a real repo can
-    # have hundreds of files, so we never draw the whole tree up front.
-    if not state.tiles:
+    # Tiles exist for files in the learned scope and files a tool call touched --
+    # a real repo can have thousands of files, so we never draw the whole tree.
+    if not state.tiles and not state.scope:
         return Text("(no files touched yet)", style="grey50")
 
     table = Table.grid(padding=(0, 1))
     for _ in range(_COLUMNS):
         table.add_column()
 
-    paths = list(state.tiles.keys())
+    tiles = {**{p: _UNTOUCHED for p in sorted(state.scope)}, **state.tiles}
+    paths = list(tiles.keys())
     for i in range(0, len(paths), _COLUMNS):
         row = paths[i : i + _COLUMNS]
-        cells = [_tile_text(p, state.tiles[p], p in state.scope) for p in row]
+        cells = [_tile_text(p, tiles[p], p in state.scope) for p in row]
         cells += [Text("")] * (_COLUMNS - len(cells))
         table.add_row(*cells)
     return table
@@ -53,15 +56,16 @@ def _build_counters(state: state_mod.RunState) -> Table:
     for _ in range(4):
         table.add_column()
 
-    prompt_tokens = state.prompt_tokens if state.prompt_tokens is not None else "--"
+    prompt_tokens = f"{state.prompt_tokens:,}" if state.prompt_tokens is not None else "--"
     cost = f"${state.cost_usd:.4f}" if state.cost_usd is not None else "--"
 
-    table.add_row("tool calls", "files read", "prompt tokens", "cost")
+    table.add_row("tool calls", "blocked", "files read", "prompt tokens", "cost")
     table.add_row(
         Text(str(state.tool_calls), style="bold"),
-        Text(str(len(state.files_read)), style="bold"),
-        Text(str(prompt_tokens), style="bold"),
-        Text(str(cost), style="bold"),
+        Text(str(state.blocked), style="bold red3" if state.blocked else "bold"),
+        Text(str(state.files_read), style="bold"),
+        Text(prompt_tokens, style="bold"),
+        Text(cost, style="bold"),
     )
     return table
 
@@ -76,10 +80,13 @@ def _build_log(state: state_mod.RunState, max_lines: int = 12) -> Panel:
 
 def build_renderable(state: state_mod.RunState) -> Panel:
     status_style = "bold green" if state.status == state_mod.DONE else "bold yellow"
-    header = Text.from_markup(
-        f"[bold]{state.condition}[/bold]  {state.ticket}   "
-        f"[{status_style}]{state.status}[/{status_style}]"
+    # Text.assemble, not markup: ticket ids and model names may contain [brackets].
+    header = Text.assemble(
+        (state.condition, "bold"), "  ", state.ticket, "   ", (state.status, status_style),
+        ("   " + state.model, "grey50") if state.model else "",
     )
+    if state.based_on:
+        header.append(f"\nlearned from {', '.join(state.based_on)}", style="magenta")
 
     body = Group(
         header,

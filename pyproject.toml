@@ -1,0 +1,41 @@
+[project]
+name = "scope-envelope"
+version = "0.1.0"
+description = "Gateway that learns each ticket type's footprint from past work and scopes coding agents to it"
+authors = [
+    { name = "Rami Radaideh" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pymongo>=4.20.0",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+scope-envelope = "scope_envelope.cli:main"
+agent = "scope_envelope.cli:agent_main"
+scope-agent = "scope_envelope.chat:main"
+
+[project.optional-dependencies]
+agent = [
+    "langchain>=1.5.0",
+    "langchain-core>=1.8.0",
+    "langchain-openai>=1.8.0",
+]
+viewer = [
+    "fastapi>=0.163.0",
+    "rich>=15.0.0",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
