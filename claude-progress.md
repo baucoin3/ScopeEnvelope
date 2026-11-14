@@ -4,31 +4,13 @@
 
 - **Branch:** feat/live-view-speed
 - **Last updated:** 2026-11-14
-- **Summary:** 5 files (3 new, 2 modified)
+- **Summary:** 8 files (3 new, 5 modified)
 
 ## What to do next
 
 - (not set)
 
 ## Session Log
-
-
-### 2026-11-14T19:09:59Z
-- 11 files (6 new, 5 modified)
-  New:
-  - agent/__init__.py
-  - agent/run.py
-  - rfc.md
-  - sample.png
-  - src/scope_envelope/workspace.py
-  - tests/test_workspace.py
-  Modified:
-  - .gitignore
-  - README.md
-  - pyproject.toml
-  - src/scope_envelope/agent.py
-  - src/scope_envelope/cli.py
-
 
 ### 2026-11-14T19:52:20Z
 - 16 files (3 new, 13 modified)
@@ -162,5 +144,19 @@
   Modified:
   - src/scope_envelope/webviz/static/app.js
   - src/scope_envelope/webviz/static/index.html
+
+
+### 2026-11-14T21:55:32Z
+- 8 files (3 new, 5 modified)
+  New:
+  - .claude
+  - rfc.md
+  - sample.png
+  Modified:
+  - src/scope_envelope/agent.py
+  - src/scope_envelope/config.py
+  - src/scope_envelope/gateway.py
+  - src/scope_envelope/store.py
+  - tests/test_portability.py
 
 ## Past Sessions
