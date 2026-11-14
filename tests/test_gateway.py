@@ -167,7 +167,7 @@ def test_finish_twice_raises(repo):
 def test_langchain_tools_route_through_gateway(repo):
     gw, store = make(repo, scope=learned_scope())
     tools = {t.name: t for t in gw.tools()}
-    assert set(tools) == {"list_dir", "read_file", "grep", "write_file", "run_tests", "request_write"}
+    assert set(tools) == {"list_dir", "read_file", "grep", "write_file", "edit_file", "run_tests", "request_write"}
     assert tools["write_file"].invoke({"path": "utils/strings.py", "content": "x"}).startswith("Blocked")
     assert store.events[-1]["decision"] == "blocked"
 

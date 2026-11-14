@@ -57,11 +57,27 @@ def price(model: str, prompt_tokens: int, completion_tokens: int) -> float | Non
     return (prompt_tokens * rates[0] + completion_tokens * rates[1]) / 1_000_000
 
 
-class UsageReporter(BaseCallbackHandler):
-    """Reports tokens and cost to the gateway after every model reply, so the viewer updates live."""
+class TokenBudgetExceeded(RuntimeError):
+    pass
 
-    def __init__(self, gateway: Gateway):
+
+class UsageReporter(BaseCallbackHandler):
+    """Reports tokens and cost to the gateway after every model reply, so the viewer updates live.
+
+    Also enforces the per-run prompt-token budget: once it's spent, the run stops cleanly.
+    """
+
+    raise_error = True  # let TokenBudgetExceeded stop the agent instead of being swallowed
+
+    def __init__(self, gateway: Gateway, max_prompt_tokens: int | None = None):
         self.gateway = gateway
+        self.max_prompt_tokens = max_prompt_tokens
+
+    def _check_budget(self) -> None:
+        if self.max_prompt_tokens and self.gateway.prompt_tokens >= self.max_prompt_tokens:
+            raise TokenBudgetExceeded(
+                f"prompt-token budget of {self.max_prompt_tokens:,} reached ({self.gateway.prompt_tokens:,} used)"
+            )
 
     def on_llm_end(self, response: LLMResult, **kwargs) -> None:
         usage = dict((response.llm_output or {}).get("token_usage") or {})
@@ -75,9 +91,10 @@ class UsageReporter(BaseCallbackHandler):
         cost = usage.get("cost")
         if cost is not None:
             self.gateway.record_llm_step(prompt, completion, float(cost), "openrouter_billed")
-            return
-        estimate = price(self.gateway.model, prompt, completion)
-        self.gateway.record_llm_step(prompt, completion, estimate, "price_table" if estimate is not None else "unknown")
+        else:
+            estimate = price(self.gateway.model, prompt, completion)
+            self.gateway.record_llm_step(prompt, completion, estimate, "price_table" if estimate is not None else "unknown")
+        self._check_budget()
 
 
 def build_model(model: str) -> ChatOpenAI:
@@ -224,7 +241,7 @@ def run_ticket(
         result = agent.invoke(
             {"messages": [{"role": "user", "content": t.text + (f"\n\nFrom the developer: {instructions}" if instructions else "")}]},
             # One tool call is a model step plus a tool step, so allow about two graph steps per call.
-            config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw)]},
+            config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw, config.max_prompt_tokens)]},
         )
         messages = result.get("messages", [])
         final_answer = str(messages[-1].content) if messages else ""

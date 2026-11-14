@@ -31,6 +31,7 @@ TOOL_KINDS = {
     "read_file": "read",
     "grep": "read",
     "write_file": "write",
+    "edit_file": "write",
     "run_tests": "exec",
     "request_write": "ask",
 }
@@ -41,8 +42,11 @@ VERBS = {
 }
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
 PATH_EXTENSIONS = (".py", ".go", ".ts", ".js", ".java", ".yaml", ".yml", ".json", ".md", ".toml", ".sql", ".txt", ".tf")
-MAX_READ_CHARS = 60_000
-MAX_GREP_HITS = 100
+# Every tool result is re-sent to the model on every later call, so big outputs cost quadratically.
+MAX_READ_LINES = 300
+MAX_READ_CHARS = 12_000
+MAX_GREP_HITS = 40
+MAX_LIST_ENTRIES = 200
 MAX_DIFF_CHARS = 20_000
 TEST_TIMEOUT_S = 600
 
@@ -210,7 +214,7 @@ class Gateway:
             return f"Error: unknown tool '{tool}'. Available tools: {', '.join(TOOL_KINDS)}."
         try:
             if kind == "write":
-                return self._write(args)
+                return self._write(args, tool)
             if kind == "ask":
                 return self._request_write(args)
             if kind == "exec":
@@ -333,12 +337,16 @@ class Gateway:
         if tool == "read_file":
             if not target.is_file():
                 raise ValueError(f"file not found: {rel}")
-            text = target.read_text(errors="replace")
+            lines = target.read_text(errors="replace").splitlines()
             if rel not in self.files_read:
                 self.files_read.append(rel)
-            if len(text) > MAX_READ_CHARS:
-                text = text[:MAX_READ_CHARS] + f"\n... (truncated, {len(text)} chars total)"
-            return self._counted(tool, rel, "read", text)
+            start = max(int(args.get("start_line") or 1), 1)
+            count = min(int(args.get("max_lines") or MAX_READ_LINES), MAX_READ_LINES)
+            chunk = "\n".join(lines[start - 1 : start - 1 + count])[:MAX_READ_CHARS]
+            end = min(start - 1 + count, len(lines))
+            if start > 1 or end < len(lines):
+                chunk = f"[lines {start}-{end} of {len(lines)}; use start_line to read more]\n" + chunk
+            return self._counted(tool, rel, "read", chunk)
         return self._counted(tool, rel, "read", self._grep(args.get("pattern", ""), rel))
 
     def _list_dir(self, target: Path, rel: str) -> str:
@@ -350,7 +358,10 @@ class Gateway:
             if path.startswith(prefix):
                 head, _, tail = path[len(prefix):].partition("/")
                 entries.add(head + "/" if tail else head)
-        return "\n".join(sorted(entries)) or "(empty)"
+        listed = sorted(entries)
+        if len(listed) > MAX_LIST_ENTRIES:
+            return "\n".join(listed[:MAX_LIST_ENTRIES]) + f"\n... ({len(listed)} entries; use grep to find a specific file)"
+        return "\n".join(listed) or "(empty)"
 
     def _grep(self, pattern: str, rel: str) -> str:
         if not pattern:
@@ -369,12 +380,12 @@ class Gateway:
                 continue
             for n, line in enumerate(text.splitlines(), 1):
                 if regex.search(line):
-                    hits.append(f"{path}:{n}: {line.strip()[:300]}")
+                    hits.append(f"{path}:{n}: {line.strip()[:200]}")
                     if len(hits) >= MAX_GREP_HITS:
                         return "\n".join(hits) + f"\n... (stopped at {MAX_GREP_HITS} matches)"
         return "\n".join(hits) or "(no matches)"
 
-    def _write(self, args: dict) -> str:
+    def _write(self, args: dict, tool: str = "write_file") -> str:
         target, rel = self._resolve(args.get("path"))
         allowed, reason = self._write_decision(rel)
         if not allowed:
@@ -382,9 +393,18 @@ class Gateway:
             self._log("write_file", path=rel, decision="blocked", reason=reason)
             return self._block_message(rel)
         previous = target.read_text(errors="replace") if target.is_file() else None
+        if tool == "edit_file":  # replace one exact snippet; safe on files too big to rewrite whole
+            old, new = args.get("old_text", ""), args.get("new_text", "")
+            found = (previous or "").count(old) if old else 0
+            if found != 1:
+                raise ValueError(
+                    f"old_text must appear exactly once in {rel} (found {found}); include more surrounding lines"
+                )
+            content = previous.replace(old, new, 1)
+        else:
+            content = args.get("content", "")
         if rel not in self.originals:
             self.originals[rel] = previous
-        content = args.get("content", "")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return self._counted("write_file", rel, "written", f"Wrote {rel}", reason=reason, extra=_change(rel, previous, content))

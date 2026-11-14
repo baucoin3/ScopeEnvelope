@@ -184,3 +184,38 @@ def test_commit_date_is_the_learning_cutoff(tmp_path):
                    check=True, env={"GIT_COMMITTER_DATE": "2026-10-09T14:00:00Z", "PATH": "/usr/bin:/bin"})
     assert agent_mod.commit_date(str(tmp_path), "HEAD").isoformat().startswith("2026-10-09T14:00:00")
     assert agent_mod.commit_date(str(tmp_path / "missing"), "HEAD") is None
+
+
+# --- cost guards -------------------------------------------------------------------
+
+def test_big_files_are_read_in_pages(tmp_path):
+    (tmp_path / "big.go").write_text("\n".join(f"line {i}" for i in range(1, 1001)))
+    gw = Gateway("t", "t", tmp_path, "lazy", config=Config(root=tmp_path), store=None, verbose=False)
+    first = gw.call("read_file", {"path": "big.go"})
+    assert first.startswith("[lines 1-300 of 1000") and "line 300" in first and "line 301" not in first
+    later = gw.call("read_file", {"path": "big.go", "start_line": 901, "max_lines": 999})
+    assert "[lines 901-1000 of 1000" in later and "line 1000" in later
+
+
+def test_token_budget_stops_the_run(tmp_path):
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    gw = Gateway("t", "t", tmp_path, "lazy", config=Config(root=tmp_path), store=None,
+                 model="deepseek/deepseek-v4-pro", verbose=False)
+    reporter = agent_mod.UsageReporter(gw, max_prompt_tokens=10_000)
+    result = LLMResult(generations=[[ChatGeneration(message=AIMessage(content="x"))]],
+                       llm_output={"token_usage": {"prompt_tokens": 12_000, "completion_tokens": 10}})
+    with pytest.raises(agent_mod.TokenBudgetExceeded):
+        reporter.on_llm_end(result)
+    assert gw.prompt_tokens == 12_000  # the step is still recorded before stopping
+
+
+def test_edit_file_changes_one_snippet_and_follows_scope(tmp_path):
+    (tmp_path / "big.go").write_text("a\nb\nc\n" * 400 + "TARGET\n")
+    store = Store()
+    gw = Gateway("t", "t", tmp_path, "lazy", config=Config(root=tmp_path), store=store, verbose=False)
+    assert gw.call("edit_file", {"path": "big.go", "old_text": "TARGET", "new_text": "DONE"}).startswith("Wrote")
+    assert (tmp_path / "big.go").read_text().count("\n") == 1201 and "DONE" in (tmp_path / "big.go").read_text()
+    assert store.events[-1]["tool"] == "write_file" and "+DONE" in store.events[-1]["diff"]
+    assert "exactly once" in gw.call("edit_file", {"path": "big.go", "old_text": "a", "new_text": "z"})

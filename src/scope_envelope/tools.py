@@ -15,9 +15,9 @@ def langchain_tools(gw: Gateway) -> list[StructuredTool]:
         """List the files and folders in a directory of the repo. Folders end with '/'."""
         return gw.call("list_dir", {"path": path})
 
-    def read_file(path: str) -> str:
-        """Read a file from the repo. Paths are relative to the repo root."""
-        return gw.call("read_file", {"path": path})
+    def read_file(path: str, start_line: int = 1, max_lines: int = 300) -> str:
+        """Read part of a file (at most 300 lines per call). Use start_line to page through long files."""
+        return gw.call("read_file", {"path": path, "start_line": start_line, "max_lines": max_lines})
 
     def grep(pattern: str, path: str = ".") -> str:
         """Search files under a path for a regex pattern. Returns path:line: text for each match."""
@@ -26,6 +26,11 @@ def langchain_tools(gw: Gateway) -> list[StructuredTool]:
     def write_file(path: str, content: str) -> str:
         """Create or overwrite a file in the repo with the full new content."""
         return gw.call("write_file", {"path": path, "content": content})
+
+    def edit_file(path: str, old_text: str, new_text: str) -> str:
+        """Replace one exact snippet in a file. old_text must appear exactly once; include a few lines of context.
+        Prefer this over write_file for existing files, especially long ones."""
+        return gw.call("edit_file", {"path": path, "old_text": old_text, "new_text": new_text})
 
     def run_tests() -> str:
         """Run the repo's test suite and return the result."""
@@ -37,5 +42,5 @@ def langchain_tools(gw: Gateway) -> list[StructuredTool]:
 
     return [
         StructuredTool.from_function(fn)
-        for fn in (list_dir, read_file, grep, write_file, run_tests, request_write)
+        for fn in (list_dir, read_file, grep, write_file, edit_file, run_tests, request_write)
     ]

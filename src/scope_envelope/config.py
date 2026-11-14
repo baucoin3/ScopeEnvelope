@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_FILE = ".scope-envelope.toml"
-DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
-DEFAULT_MAX_CALLS = 60
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+DEFAULT_MAX_CALLS = 40
+DEFAULT_MAX_PROMPT_TOKENS = 1_500_000
 
 # Marker file -> test command. First match wins.
 _TEST_COMMANDS = [
@@ -44,6 +45,7 @@ class Config:
     auto_learn: bool = True  # envelope runs learn the repo first when Atlas has no recent history
     learn_limit: int = 100  # how many ticket-linked PRs auto-learn ingests
     learn_max_age_days: int = 7  # history older than this is refreshed
+    max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS  # hard stop: total prompt tokens per run
 
     @property
     def test_argv(self) -> list[str] | None:
@@ -52,7 +54,7 @@ class Config:
 
 KEYS = (
     "repo", "test_command", "subject_patterns", "approval", "model", "max_calls",
-    "save_unchecked", "auto_learn", "learn_limit", "learn_max_age_days",
+    "save_unchecked", "auto_learn", "learn_limit", "learn_max_age_days", "max_prompt_tokens",
 )
 
 
