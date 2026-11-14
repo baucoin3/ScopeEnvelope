@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -94,24 +95,32 @@ def build_model(model: str) -> ChatOpenAI:
     )
 
 
-def _event(store: Store | None, run_id: str, ticket: Ticket, condition: str, repo: str | None, **fields) -> None:
+def _event(store: Store | None, run_id: str, ticket: Ticket, condition: str, repo: str | None,
+           on_event: Callable[[dict], None] | None = None, **fields) -> None:
     """A run-level event in `runs`, outside any Gateway (used while learning, before the run starts)."""
-    if store is None:
-        return
-    try:
-        store.log({
+    event = {
             "run_id": run_id, "ticket": ticket.id, "repo": repo, "condition": condition, "model": None,
             "step": 0, "tool": "learn", "path": None, "reason": "", "scope_based_on": [], "scope_files": [],
             # Same shape as gateway events, so a consumer can read `totals` from every event.
             "totals": {"calls": 0, "blocked": 0, "files_read": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0},
             "ts": datetime.now(UTC), **fields,
-        })
+    }
+    if on_event:
+        try:
+            on_event(dict(event))
+        except Exception as exc:
+            log.warning("on_event callback failed: %s", exc)
+    if store is None:
+        return
+    try:
+        store.log(event)
     except Exception as exc:  # telemetry must not stop the run
         log.warning("could not log learn event: %s", exc)
 
 
 def auto_learn(
-    store: Store, config: Config, ticket: Ticket, condition: str, run_id: str, cutoff: datetime | None = None
+    store: Store, config: Config, ticket: Ticket, condition: str, run_id: str, cutoff: datetime | None = None,
+    on_event: Callable[[dict], None] | None = None, verbose: bool = True,
 ) -> dict:
     """Learn the repo first when Atlas has no recent history for it. Returns what happened.
 
@@ -123,25 +132,28 @@ def auto_learn(
     repo = config.repo
     status = store.repo_status(repo)
     if not needs_learning(status, config.learn_max_age_days):
-        _event(store, run_id, ticket, condition, repo, decision="fresh", footprints=status.get("footprints"))
+        _event(store, run_id, ticket, condition, repo, on_event, decision="fresh", footprints=status.get("footprints"))
         return {"learned": False, "reason": "history is recent", "footprints": status.get("footprints")}
 
-    print(f"[scope] No recent history for {repo} in Atlas. Learning it first ...", file=sys.stderr)
-    _event(store, run_id, ticket, condition, repo, decision="start", limit=config.learn_limit)
+    if verbose:
+        print(f"[scope] No recent history for {repo} in Atlas. Learning it first ...", file=sys.stderr)
+    _event(store, run_id, ticket, condition, repo, on_event, decision="start", limit=config.learn_limit)
     store.ensure_indexes()
     own_ticket = ticket.number if ticket.repo == repo else None
 
     def progress(done: int, total: int) -> None:
         if done == total or done % 10 == 0:
-            print(f"[scope] learned {done}/{total} tickets", file=sys.stderr)
-            _event(store, run_id, ticket, condition, repo, decision="progress", done=done, total=total)
+            if verbose:
+                print(f"[scope] learned {done}/{total} tickets", file=sys.stderr)
+            _event(store, run_id, ticket, condition, repo, on_event, decision="progress", done=done, total=total)
 
     report = learn(
         repo, store, limit=config.learn_limit, exclude_issue=own_ticket,
         before=cutoff, on_progress=progress,
     )
-    _event(store, run_id, ticket, condition, repo, decision="done", saved=report.saved)
-    print(f"[scope] saved {report.saved} footprints; waiting for Atlas to index them ...", file=sys.stderr)
+    _event(store, run_id, ticket, condition, repo, on_event, decision="done", saved=report.saved)
+    if verbose:
+        print(f"[scope] saved {report.saved} footprints; waiting for Atlas to index them ...", file=sys.stderr)
     store.wait_until_queryable(timeout_s=120)
     for _ in range(24):  # Atlas embeds new documents asynchronously; wait until search sees them
         if store.footprints.count_documents({"repo": repo}) and _searchable(store, ticket, repo, own_ticket):
@@ -178,6 +190,9 @@ def run_ticket(
     base: str = "HEAD",
     in_place: bool = False,
     verbose: bool = True,
+    run_id: str | None = None,
+    instructions: str = "",
+    on_event: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run one ticket (a GitHub issue link, owner/repo#123, or plain text) and return the run summary.
 
@@ -190,22 +205,24 @@ def run_ticket(
     llm = build_model(model or config.model)  # fail on a missing API key before anything is logged
     t = fetch_ticket(ticket)
     store = Store.from_env()
-    run_id = uuid.uuid4().hex[:12]
+    run_id = run_id or uuid.uuid4().hex[:12]
 
     learned = None
     if condition == "envelope" and store and config.repo and config.auto_learn:
-        learned = auto_learn(store, config, t, condition, run_id, cutoff=commit_date(repo_root, base))
+        learned = auto_learn(
+            store, config, t, condition, run_id, cutoff=commit_date(repo_root, base), on_event=on_event, verbose=verbose
+        )
 
     work_root = Path(repo_root).resolve() if in_place else workspace.prepare(repo_root, t.id, condition, base)
     gw = Gateway(
         t.id, t.text, work_root, condition, config=config, store=store, model=model, before=before,
-        exclude_issue=t.number if t.repo == config.repo else None, run_id=run_id, verbose=verbose,
+        exclude_issue=t.number if t.repo == config.repo else None, run_id=run_id, on_event=on_event, verbose=verbose,
     )
     agent = create_agent(model=llm, tools=gw.tools(), system_prompt=BASE_SYSTEM_PROMPT + gw.scope_prompt())
     final_answer = ""
     try:
         result = agent.invoke(
-            {"messages": [{"role": "user", "content": t.text}]},
+            {"messages": [{"role": "user", "content": t.text + (f"\n\nFrom the developer: {instructions}" if instructions else "")}]},
             # One tool call is a model step plus a tool step, so allow about two graph steps per call.
             config={"recursion_limit": 2 * config.max_calls + 5, "callbacks": [UsageReporter(gw)]},
         )

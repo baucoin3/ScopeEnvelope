@@ -129,6 +129,7 @@ class Gateway:
         before: datetime | None = None,
         exclude_issue: int | None = None,
         run_id: str | None = None,
+        on_event: Callable[[dict], None] | None = None,
         verbose: bool = True,
     ):
         if mode not in MODES:
@@ -147,6 +148,7 @@ class Gateway:
         self.store: Store | None = Store.from_env() if store is _FROM_ENV else store  # type: ignore[assignment]
         self.approver = approver or make_approver(self.config.approval)
         self.verbose = verbose
+        self.on_event = on_event  # e.g. the interactive session printing friendly progress lines
         self.is_git = (self.repo_root / ".git").exists()
 
         self.run_id = run_id or uuid.uuid4().hex[:12]
@@ -537,6 +539,11 @@ class Gateway:
                 if not self._log_failed:
                     log.warning("could not write to runs (continuing without telemetry): %s", exc)
                     self._log_failed = True
+        if self.on_event:
+            try:
+                self.on_event(event)
+            except Exception as exc:  # a display problem must not break the run
+                log.warning("on_event callback failed: %s", exc)
         if self.verbose:
             where = f" {path}" if path else ""
             note = f" ({reason})" if reason else ""

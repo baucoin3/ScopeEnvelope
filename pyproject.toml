@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 scope-envelope = "scope_envelope.cli:main"
 agent = "scope_envelope.cli:agent_main"
+scope-agent = "scope_envelope.chat:main"
 
 [project.optional-dependencies]
 agent = [
